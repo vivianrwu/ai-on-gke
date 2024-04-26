@@ -17,12 +17,26 @@ spec:
   content: {}
   interfaces:
     variables:
+      - name: additional_labels
+        description: Additional labels to add to Kubernetes resources.
+        varType: string
+        defaultValue: "created-by=gke-ai-quick-start-solutions,ai.gke.io=ray"
       - name: acknowledge
         varType: bool
         required: true
+      - name: solution_deployment_view
+        varType: bool
+        required: true
+      - name: iap_consent_info
+        description: Configure the <a href="https://developers.google.com/workspace/guides/configure-oauth-consent#configure_oauth_consent"><i>OAuth Consent Screen</i></a> for your project. Ensure <b>User type</b> is set to <i>Internal</i>. Note that by default, only users within your organization can be allowlisted. To add external users, change the <b>User type</b> to <i>External</i> after the application is deployed.
+        varType: bool
+        defaultValue: false
       - name: autopilot_cluster
         varType: bool
-        defaultValue: true
+        defaultValue: false
+      - name: cluster_name
+        varType: string
+        defaultValue: "ai-on-gke"
       - name: cluster_location
         varType: string
         required: true
@@ -31,9 +45,6 @@ spec:
         description: "require to use connectgateway for private clusters, default: cluster_name"
         varType: string
         defaultValue: ""
-      - name: cluster_name
-        varType: string
-        required: true
       - name: create_brand
         description: Create Brand OAuth Screen
         varType: bool
@@ -117,7 +128,7 @@ spec:
       - name: ray_dashboard_domain
         description: Domain used for application and SSL certificate.
         varType: string
-        defaultValue: "ray.example.com"
+        defaultValue: "<your Ray dashboard domain here>"
       - name: ray_dashboard_k8s_backend_config_name
         description: Name of the Backend Config on GCP
         varType: string
@@ -137,8 +148,9 @@ spec:
         varType: string
         defaultValue: ray-dashboard-managed-cert
       - name: ray_dashboard_members_allowlist
+        description: "For example - user:example@google.com,serviceAccount:serviceAccount@google.com,group:group@google.com,domain:google.com"
         varType: string
-        defaultValue: ""
+        defaultValue: "user:<your-email-here>"
       - name: ray_version
         varType: string
         defaultValue: v2.9.3
@@ -154,6 +166,16 @@ spec:
         varType: string
         defaultValue: ray-sa
     outputs:
-      - name: grafana_uri
       - name: ray_cluster_uri
       - name: kubernetes_namespace
+        description: Kubernetes namespace
+      - name: gke_cluster_name
+        description: GKE cluster name where the chat interface, JupyterHub and Ray cluster are running
+      - name: gke_cluster_location
+        description: GKE cluster location
+      - name: project_id
+        description: GCP project
+      - name: ray_dashboard_ip_address
+        description: Ray Dashboard global IP address
+      - name: ray_dashboard_uri
+        description: Ray Dashboard Endpoint to access user interface. In case of private IP, consider port-forwarding.

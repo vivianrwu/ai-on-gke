@@ -43,10 +43,10 @@ variable "namespace" {
 }
 
 variable "additional_labels" {
-  // list(string) is used instead of map(string) since blueprint metadata does not support maps.
-  type        = list(string)
+  // string is used instead of map(string) since blueprint metadata does not support maps.
+  type        = string
   description = "Additional labels to add to Kubernetes resources."
-  default     = ["created-by=ai-on-gke", "ai.gke.io=ray"]
+  default     = "created-by=ai-on-gke,ai.gke.io=ray"
 }
 
 variable "enable_tpu" {
@@ -212,7 +212,7 @@ variable "k8s_backend_service_port" {
 
 variable "domain" {
   type        = string
-  description = "Provide domain for ingress resource and ssl certificate. If it's empty, it will use nip.io wildcard dns"
+  description = "Provide domain for ingress resource and ssl certificate."
   default     = ""
 }
 
@@ -236,9 +236,8 @@ variable "client_secret" {
 }
 
 variable "members_allowlist" {
-  type    = string
-  default = ""
-  ## keeping it string type to support single field input for marketplace UI.
+  type    = list(string)
+  default = []
 }
 
 variable "use_custom_image" {

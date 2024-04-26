@@ -20,7 +20,7 @@ subnetwork_cidr = "10.100.0.0/16"
 create_cluster    = true # Creates a GKE cluster in the specified network.
 cluster_name      = "<cluster-name>"
 cluster_location  = "us-central1"
-autopilot_cluster = true
+autopilot_cluster = false
 private_cluster   = false
 
 ## GKE environment variables
@@ -37,14 +37,14 @@ cloudsql_instance = "pgvector-instance"
 ## Service accounts
 
 # Creates a google service account & k8s service account & configures workload identity with appropriate permissions.
-ray_service_account             = "ray-sa"
+ray_service_account             = "ray-rag-sa"
 enable_grafana_on_ray_dashboard = false
 
 # Creates a google service account & k8s service account & configures workload identity with appropriate permissions.
 rag_service_account = "rag-sa"
 
 # Creates a google service account & k8s service account & configures workload identity with appropriate permissions.
-jupyter_service_account = "jupyter-sa"
+jupyter_service_account = "jupyter-rag-sa"
 
 ## Embeddings table name - change this to the TABLE_NAME used in the notebook.
 dataset_embeddings_table_name = "netflix_reviews_db"
@@ -58,15 +58,15 @@ dataset_embeddings_table_name = "netflix_reviews_db"
 
 ## Jupyter IAP Settings
 jupyter_add_auth          = false                                                                 # Set to true to enable authenticated access via IAP.
-jupyter_domain            = ""                                                                    # Custom domain for ingress resource and ssl certificate. If empty, it will use nip.io wildcard DNS.
+jupyter_domain            = "jupyter.example.com"                                                 # Custom domain for ingress resource and ssl certificate. 
 jupyter_members_allowlist = "user:<email>,group:<email>,serviceAccount:<email>,domain:google.com" # Allowlist principals for access.
 
 ## Frontend IAP Settings
 frontend_add_auth          = false                                                                 # Set to true to enable authenticated access via IAP.
-frontend_domain            = ""                                                                    # Custom domain for ingress resource and ssl certificate. If empty, it will use nip.io wildcard DNS.
+frontend_domain            = "frontend.example.com"                                                # Custom domain for ingress resource and ssl certificate.
 frontend_members_allowlist = "user:<email>,group:<email>,serviceAccount:<email>,domain:google.com" # Allowlist principals for access.
 
 ## Ray Dashboard IAP Settings
 ray_dashboard_add_auth          = false                                                                 # Set to true to enable authenticated access via IAP.
-ray_dashboard_domain            = ""                                                                    # Custom domain for ingress resource and ssl certificate. If empty, it will use nip.io wildcard DNS.
+ray_dashboard_domain            = "ray.example.com"                                                     # Custom domain for ingress resource and ssl certificate. 
 ray_dashboard_members_allowlist = "user:<email>,group:<email>,serviceAccount:<email>,domain:google.com" # Allowlist principals for access.

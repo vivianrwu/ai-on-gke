@@ -54,7 +54,7 @@ module "project-services" {
     "servicenetworking.googleapis.com",
     "serviceusage.googleapis.com",
     "sourcerepo.googleapis.com",
-    (var.ray_dashboard_add_auth ? ["iap.googleapis.com"] : [])
+    "iap.googleapis.com"
   ])
 }
 
@@ -63,7 +63,7 @@ module "infra" {
   count  = var.create_cluster ? 1 : 0
 
   project_id        = var.project_id
-  cluster_name      = var.cluster_name
+  cluster_name      = local.cluster_name
   cluster_location  = var.cluster_location
   autopilot_cluster = var.autopilot_cluster
   private_cluster   = var.private_cluster
@@ -73,25 +73,28 @@ module "infra" {
   cpu_pools         = var.cpu_pools
   enable_gpu        = var.enable_gpu
   gpu_pools         = var.gpu_pools
+  depends_on        = [module.project-services]
 }
 
 data "google_container_cluster" "default" {
-  count    = var.create_cluster ? 0 : 1
-  name     = var.cluster_name
-  location = var.cluster_location
+  count      = var.create_cluster ? 0 : 1
+  name       = var.cluster_name
+  location   = var.cluster_location
+  depends_on = [module.project-services]
 }
 
 locals {
   endpoint                          = var.create_cluster ? "https://${module.infra[0].endpoint}" : "https://${data.google_container_cluster.default[0].endpoint}"
   ca_certificate                    = var.create_cluster ? base64decode(module.infra[0].ca_certificate) : base64decode(data.google_container_cluster.default[0].master_auth[0].cluster_ca_certificate)
   private_cluster                   = var.create_cluster ? var.private_cluster : data.google_container_cluster.default[0].private_cluster_config.0.enable_private_endpoint
-  cluster_membership_id             = var.cluster_membership_id == "" ? var.cluster_name : var.cluster_membership_id
+  cluster_membership_id             = var.cluster_membership_id == "" ? local.cluster_name : var.cluster_membership_id
   enable_autopilot                  = var.create_cluster ? var.autopilot_cluster : data.google_container_cluster.default[0].enable_autopilot
   enable_tpu                        = var.create_cluster ? var.enable_tpu : data.google_container_cluster.default[0].enable_tpu
   host                              = local.private_cluster ? "https://connectgateway.googleapis.com/v1/projects/${data.google_project.project.number}/locations/${var.cluster_location}/gkeMemberships/${local.cluster_membership_id}" : local.endpoint
   kubernetes_namespace              = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.kubernetes_namespace}" : var.kubernetes_namespace
   workload_identity_service_account = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.workload_identity_service_account}" : var.workload_identity_service_account
-  ray_cluster_default_uri           = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${var.cluster_name}/${local.kubernetes_namespace}/${var.ray_cluster_name}-kuberay-head-svc/overview?project=${var.project_id}"
+  cluster_name                      = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.cluster_name}" : var.cluster_name
+  ray_cluster_default_uri           = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${local.cluster_name}/${local.kubernetes_namespace}/${var.ray_cluster_name}-kuberay-head-svc/overview?project=${var.project_id}"
 }
 
 provider "kubernetes" {
@@ -156,6 +159,7 @@ module "kuberay-monitoring" {
   source                          = "../../modules/kuberay-monitoring"
   providers                       = { helm = helm.ray, kubernetes = kubernetes.ray }
   project_id                      = var.project_id
+  autopilot_cluster               = var.autopilot_cluster
   namespace                       = local.kubernetes_namespace
   create_namespace                = true
   enable_grafana_on_ray_dashboard = var.enable_grafana_on_ray_dashboard
@@ -185,6 +189,7 @@ module "kuberay-cluster" {
   grafana_host              = var.enable_grafana_on_ray_dashboard ? module.kuberay-monitoring[0].grafana_uri : ""
   network_policy_allow_cidr = var.kuberay_network_policy_allow_cidr
   disable_network_policy    = var.disable_ray_cluster_network_policy
+  additional_labels         = var.additional_labels
 
   # IAP Auth parameters
   add_auth                 = var.ray_dashboard_add_auth
@@ -198,9 +203,8 @@ module "kuberay-cluster" {
   k8s_backend_config_name  = var.ray_dashboard_k8s_backend_config_name
   k8s_backend_service_port = var.ray_dashboard_k8s_backend_service_port
   domain                   = var.ray_dashboard_domain
-  members_allowlist        = var.ray_dashboard_members_allowlist
-
-  depends_on = [module.gcs, module.kuberay-operator]
+  members_allowlist        = var.ray_dashboard_members_allowlist != "" ? split(",", var.ray_dashboard_members_allowlist) : []
+  depends_on               = [module.gcs, module.kuberay-operator]
 }
 
 

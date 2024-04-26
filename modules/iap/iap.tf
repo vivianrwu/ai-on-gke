@@ -12,7 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# IAP Section: Enabled the IAP service
+locals {
+  // add support for wildcard DNS ex; {IP_ADDRESS}.example.com
+  domain = startswith(var.domain, "{IP_ADDRESS}.") ? "${google_compute_global_address.ip_address.address}.${trimprefix(var.domain, "{IP_ADDRESS}.")}" : var.domain
+}
+
+resource "terraform_data" "domain_validation" {
+  input = timestamp()
+
+  lifecycle {
+    precondition {
+      condition     = var.domain != ""
+      error_message = "IAP configuration requires domain name, Please provide a valid domain name for ${var.app_name} application."
+    }
+
+    precondition {
+      condition     = length(var.members_allowlist) != 0
+      error_message = "IAP configuration requires allowlisting users. Please provide a valid allowlist for ${var.app_name} application."
+    }
+  }
+}
+
 data "google_project" "project" {
   project_id = var.project_id
 }
@@ -55,7 +75,7 @@ resource "helm_release" "iap" {
   chart            = "${path.module}/charts/iap/"
   namespace        = var.namespace
   create_namespace = true
-  # timeout increased to support autopilot scaling resources, and give enough time to complete the deployment
+  # Timeout is increased to guarantee sufficient scale-up time for Autopilot nodes.
   timeout = 1200
   set {
     name  = "iap.backendConfig.name"
@@ -84,7 +104,7 @@ resource "helm_release" "iap" {
 
   set {
     name  = "iap.managedCertificate.domain"
-    value = var.domain != "" ? var.domain : "${google_compute_global_address.ip_address.address}.nip.io"
+    value = local.domain
   }
 
   set {

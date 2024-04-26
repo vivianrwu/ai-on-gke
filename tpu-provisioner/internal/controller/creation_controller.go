@@ -28,10 +28,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
+
+// When this pod label is set to "true", the TPU provisioner will not reconcile the pod.
+const DisableAutoProvisioningLabel = "tpu-provisioner.cloud.google.com/disable-autoprovisioning"
 
 // CreationReconciler watches Pods and creates Node Pools.
 type CreationReconciler struct {
@@ -40,8 +46,8 @@ type CreationReconciler struct {
 	Recorder record.EventRecorder
 
 	PodCriteria PodCriteria
-
-	Provider cloud.Provider
+	Provider    cloud.Provider
+	Concurrency int
 }
 
 type PodCriteria struct {
@@ -51,6 +57,7 @@ type PodCriteria struct {
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=pods/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups="",resources=pods/finalizers,verbs=update
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *CreationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	lg := ctrllog.FromContext(ctx)
@@ -66,19 +73,10 @@ func (r *CreationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("getting pod: %w", err)
 	}
 
-	// Return early if Pod should not trigger a scale up.
-	if !isPending(&pod) || !isUnschedulable(&pod) ||
-		!doesRequestResource(&pod, r.PodCriteria.ResourceType) ||
-		!hasNodeSelectors(&pod, cloud.GKETPUNodeSelector) ||
-		pod.DeletionTimestamp != nil {
-		lg.V(3).Info("Ignoring pod")
-		return ctrl.Result{}, nil
-	}
-
 	lg.Info("Ensuring node pool for unschedulable pod")
 	if err := r.Provider.EnsureNodePoolForPod(&pod, "pod is currently unschedulable"); err != nil {
 		if errors.Is(err, cloud.ErrDuplicateRequest) {
-			lg.Info("Ignoring duplicate request to create node pool")
+			lg.V(3).Info("Ignoring duplicate request to create node pool", "message", err.Error())
 		} else if errors.Is(err, cloud.ErrNodePoolStopping) {
 			wait := 5 * time.Second
 			lg.Info("Attempted to create a node pool that is currently undergoing deletion, retrying soon",
@@ -96,5 +94,21 @@ func (r *CreationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 func (r *CreationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.Concurrency,
+		}).
+		WithEventFilter(predicate.NewPredicateFuncs(func(object client.Object) bool {
+			// Only reconcile pods which meet the conditions defined below.
+			pod, ok := object.(*corev1.Pod)
+			return ok &&
+				partOfJobSet(pod) &&
+				isLeaderPod(pod) &&
+				isPending(pod) &&
+				isUnschedulable(pod) &&
+				doesRequestResource(pod, r.PodCriteria.ResourceType) &&
+				hasNodeSelectors(pod, cloud.GKETPUNodeSelector) &&
+				!autoProvisioningDisabled(pod) &&
+				!podDeleted(pod)
+		})).
 		Complete(r)
 }

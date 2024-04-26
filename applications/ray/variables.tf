@@ -39,7 +39,7 @@ variable "ray_version" {
 variable "kubernetes_namespace" {
   type        = string
   description = "Kubernetes namespace where resources are deployed"
-  default     = "myray"
+  default     = "ml"
 }
 
 variable "enable_grafana_on_ray_dashboard" {
@@ -55,7 +55,8 @@ variable "create_gcs_bucket" {
 }
 
 variable "gcs_bucket" {
-  type = string
+  type        = string
+  description = "The GCS bucket to store data for the Ray cluster."
 }
 
 variable "create_service_account" {
@@ -71,8 +72,9 @@ variable "workload_identity_service_account" {
 }
 
 variable "create_ray_cluster" {
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
+  description = "Create a Ray cluster"
 }
 
 variable "ray_cluster_name" {
@@ -103,7 +105,7 @@ variable "private_cluster" {
 
 variable "autopilot_cluster" {
   type    = bool
-  default = false
+  default = true
 }
 
 variable "cpu_pools" {
@@ -166,15 +168,16 @@ variable "gpu_pools" {
     gpu_driver_version     = optional(string, "DEFAULT")
   }))
   default = [{
-    name               = "gpu-pool"
-    machine_type       = "n1-standard-16"
+    name               = "gpu-pool-l4"
+    machine_type       = "g2-standard-24"
     autoscaling        = true
     min_count          = 1
     max_count          = 3
     disk_size_gb       = 100
-    disk_type          = "pd-standard"
+    disk_type          = "pd-balanced"
+    enable_gcfs        = true
     accelerator_count  = 2
-    accelerator_type   = "nvidia-tesla-t4"
+    accelerator_type   = "nvidia-l4"
     gpu_driver_version = "DEFAULT"
   }]
 }
@@ -227,7 +230,7 @@ variable "ray_dashboard_k8s_backend_service_port" {
 
 variable "ray_dashboard_domain" {
   type        = string
-  description = "Domain used for SSL certificate. If it's empty, *.nip.io DNS is used."
+  description = "Domain used for SSL certificate."
   default     = ""
 }
 
@@ -290,4 +293,11 @@ variable "disable_ray_cluster_network_policy" {
   description = "Disables Kubernetes Network Policy for Ray Clusters for this demo. Defaulting to 'true' aka disabled pending fixes to the kuberay-monitoring module. This should be defaulted to false."
   type        = bool
   default     = false
+}
+
+variable "additional_labels" {
+  // string is used instead of map(string) since blueprint metadata does not support maps.
+  type        = string
+  description = "Additional labels to add to Kubernetes resources."
+  default     = "created-by=ai-on-gke,ai.gke.io=ray"
 }

@@ -33,19 +33,27 @@ spec:
   content: {}
   interfaces:
     variables:
+      - name: acknowledge
+        varType: bool
+        required: true
+      - name: solution_deployment_view
+        varType: bool
+        required: true
+      - name: iap_consent_info
+        description: Configure the <a href="https://developers.google.com/workspace/guides/configure-oauth-consent#configure_oauth_consent"><i>OAuth Consent Screen</i></a> for your project. Ensure <b>User type</b> is set to <i>Internal</i>. Note that by default, only users within your organization can be allowlisted. To add external users, change the <b>User type</b> to <i>External</i> after the application is deployed.
+        varType: bool
+        defaultValue: false
       - name: add_auth
         description: Enable IAP authentication on jupyterhub
         varType: bool
         defaultValue: false
       - name: additional_labels
         description: Additional labels to add to Kubernetes resources.
-        varType: list(string)
-        defaultValue:
-          - created-by=ai-on-gke
-          - ai.gke.io=jupyter
+        varType: string
+        defaultValue: "created-by=gke-ai-quick-start-solutions,ai.gke.io=jupyter"
       - name: autopilot_cluster
         varType: bool
-        defaultValue: true
+        defaultValue: false
       - name: client_id
         description: Client ID used for enabling IAP
         varType: string
@@ -54,6 +62,9 @@ spec:
         description: Client secret used for enabling IAP
         varType: string
         defaultValue: ""
+      - name: cluster_name
+        varType: string
+        defaultValue: "ai-on-gke"
       - name: cluster_location
         varType: string
         required: true
@@ -61,16 +72,13 @@ spec:
         description: "require to use connectgateway for private clusters, default: cluster_name"
         varType: string
         defaultValue: ""
-      - name: cluster_name
-        varType: string
-        required: true
       - name: create_brand
         description: Create Brand OAuth Screen
         varType: bool
         defaultValue: false
       - name: create_cluster
         varType: bool
-        defaultValue: false
+        defaultValue: true
       - name: create_gcs_bucket
         description: Enable flag to create gcs_bucket
         varType: bool
@@ -82,7 +90,7 @@ spec:
       - name: domain
         description: Domain used for application and SSL certificate.
         varType: string
-        defaultValue: "jupyter.example.com"
+        defaultValue: "<your JupyterHub domain here>"
       - name: gcs_bucket
         description: Bucket name to store the dataset. The bucket name must be globally unique across google cloud projects
         varType: string
@@ -120,7 +128,7 @@ spec:
       - name: members_allowlist
         description: "For example - user:example@google.com,serviceAccount:serviceAccount@google.com,group:group@google.com,domain:google.com"
         varType: string
-        defaultValue: ""
+        defaultValue: "user:<your-email-here>"
       - name: network_name
         description: Network name of VPC
         varType: string
@@ -153,4 +161,11 @@ spec:
       - name: jupyterhub_user
         description: JupyterHub user is only required for standard authentication. Ignore, in case of IAP authentication
       - name: kubernetes_namespace
+        description: Kubernetes namespace
+      - name: gke_cluster_name
+        description: GKE cluster name where the chat interface, JupyterHub and Ray cluster are running
+      - name: gke_cluster_location
+        description: GKE cluster location
+      - name: project_id
+        description: GCP project
 

@@ -17,27 +17,38 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	jobset "sigs.k8s.io/jobset/api/jobset/v1alpha2"
 )
 
 var log = logf.Log.WithName("provider")
 
 const (
+	// GKE labels
 	GKETPUNodeSelector         = "cloud.google.com/gke-tpu-topology"
 	GKEAcceleratorNodeSelector = "cloud.google.com/gke-tpu-accelerator"
 	GKENodePoolNameLabel       = "cloud.google.com/gke-nodepool"
-	GKENodePoolNamePrefix      = "tpu-provisioner-"
-	V4PodSliceAccelerator      = "tpu-v4-podslice"
-	V5ePodSliceAccelerator     = "tpu-v5-lite-podslice"
-	V5pPodSliceAccelerator     = "tpu-v5p-slice"
-	GoogleTPUResource          = "google.com/tpu"
-	gcpLabelPrefix             = "cloud.google.com/"
-	googleLabelPrefix          = "google.com/"
+
+	// Supported accelerator types
+	V4PodSliceAccelerator  = "tpu-v4-podslice"
+	V5ePodSliceAccelerator = "tpu-v5-lite-podslice"
+	V5pPodSliceAccelerator = "tpu-v5p-slice"
+
+	// Resource type labels
+	GoogleTPUResource = "google.com/tpu"
+	gcpLabelPrefix    = "cloud.google.com/"
+	googleLabelPrefix = "google.com/"
+
 	// Default max pods per node is 110, but a lower value is necessary for large scale clusters,
 	// otherwise we'll run out of IP Space and provisioning will fail.
 	// 15 pods per node will work for small and large cluster sizes, given the TPU constraint of
 	// 1 pod per TPU node + kube-system pods
 	// TODO: move this to a environment variable
 	maxPodsPerNode = 15
+
+	// Constants for node pool naming conventions.
+	maxJobSetPrefixLength = 34
+	jobKeySuffixLength    = 5
 )
 
 var _ Provider = &GKE{}
@@ -48,14 +59,18 @@ type GKE struct {
 
 	Recorder record.EventRecorder
 
-	inProgressDeletes sync.Map
-	inProgressCreates sync.Map
+	inProgressDeletesNPName sync.Map
+	inProgressCreatesNPName sync.Map
+	inProgressCreatesJobKey sync.Map
 }
 
 func (g *GKE) NodePoolLabelKey() string { return GKENodePoolNameLabel }
 
 func (g *GKE) EnsureNodePoolForPod(p *corev1.Pod, why string) error {
-	name := podToNodePoolName(p, GKENodePoolNamePrefix, "")
+	name, err := podToNodePoolName(p)
+	if err != nil {
+		return err
+	}
 
 	exists, err := g.nodePoolExists(name)
 	if err != nil {
@@ -79,11 +94,24 @@ func (g *GKE) EnsureNodePoolForPod(p *corev1.Pod, why string) error {
 	// Node Pool will occur at the same time. The result is an error:
 	// "do: googleapi: Error 400: Cluster is running incompatible operation ..."
 	// To avoid a bunch of failed requests, we dedeuplicate here.
-	if _, inProgress := g.inProgressCreates.Load(name); inProgress {
-		return ErrDuplicateRequest
+	if _, inProgress := g.inProgressCreatesNPName.Load(name); inProgress {
+		return fmt.Errorf("creation ongoing for node pool name: %v: %w", name, ErrDuplicateRequest)
 	}
-	g.inProgressCreates.Store(name, struct{}{})
-	defer g.inProgressCreates.Delete(name)
+	g.inProgressCreatesNPName.Store(name, struct{}{})
+	defer g.inProgressCreatesNPName.Delete(name)
+
+	// A restarting JobSet will trigger a new Node Pool creation.
+	// The current creation attempt might overlap with the previous one,
+	// which could still be ongoing, so we need to deduplicate.
+	// This works because job-key remains constant across restarts.
+	// NOTE: These checks dont work across controller restarts.
+	if jobKey := p.Labels[jobset.JobKey]; jobKey != "" {
+		if _, inProgress := g.inProgressCreatesJobKey.Load(jobKey); inProgress {
+			return fmt.Errorf("creation ongoing for job-key: %v: %w", jobKey, ErrDuplicateRequest)
+		}
+		g.inProgressCreatesJobKey.Store(jobKey, struct{}{})
+		defer g.inProgressCreatesJobKey.Delete(jobKey)
+	}
 
 	g.Recorder.Eventf(p, corev1.EventTypeNormal, EventNodePoolCreationStarted, "Starting creation of Node Pool %s (size = %v) because %s", name, np.InitialNodeCount, why)
 	call := g.Service.Projects.Locations.Clusters.NodePools.Create(g.ClusterContext.ClusterName(), req)
@@ -117,9 +145,9 @@ func (g *GKE) ListNodePools() ([]NodePoolRef, error) {
 			Name:    np.Name,
 			Error:   np.Status == "ERROR",
 			Message: np.StatusMessage,
-			CreatedForPod: types.NamespacedName{
-				Name:      np.Config.Labels[LabelPodName],
-				Namespace: np.Config.Labels[LabelPodNamespace],
+			CreatedForJobSet: types.NamespacedName{
+				Name:      np.Config.Labels[LabelJobSetName],
+				Namespace: np.Config.Labels[LabelJobSetNamespace],
 			},
 		})
 	}
@@ -140,11 +168,11 @@ func (g *GKE) DeleteNodePool(name string, eventObj client.Object, why string) er
 	// Due to concurrent reconciles, multiple deletes for the same
 	// Node Pool will occur at the same time. The result is an error:
 	// To avoid a bunch of failed requests, we dedeuplicate here.
-	if _, inProgress := g.inProgressDeletes.Load(name); inProgress {
+	if _, inProgress := g.inProgressDeletesNPName.Load(name); inProgress {
 		return ErrDuplicateRequest
 	}
-	g.inProgressDeletes.Store(name, struct{}{})
-	defer g.inProgressDeletes.Delete(name)
+	g.inProgressDeletesNPName.Store(name, struct{}{})
+	defer g.inProgressDeletesNPName.Delete(name)
 
 	g.Recorder.Eventf(eventObj, corev1.EventTypeNormal, EventNodePoolDeletionStarted, "Starting deletion of Node Pool %s because %s", name, why)
 	op, err := g.Service.Projects.Locations.Clusters.Delete(g.ClusterContext.NodePoolName(name)).Do()
@@ -192,6 +220,12 @@ func (g *GKE) nodePoolForPod(name string, p *corev1.Pod) (*containerv1beta1.Node
 		return nil, errors.New("no owner reference")
 	}
 
+	jobSetName := p.Labels[jobset.JobSetNameKey]
+	if jobSetName == "" {
+		// This should never be reached due to the event filters in reconciler, but added just in case.
+		return nil, fmt.Errorf("pod %s is not part of a jobset, not constructing node pool config for it", p.Name)
+	}
+
 	labels := map[string]string{
 		// Used to keep track of what Node Pools this provisioner is responsible for.
 		LabelNodepoolManager: LabelNodepoolManagerTPUPodinator,
@@ -202,8 +236,8 @@ func (g *GKE) nodePoolForPod(name string, p *corev1.Pod) (*containerv1beta1.Node
 		// Assuming a Namespaced parent here...
 		LabelParentNamespace: strings.ToLower(p.Namespace),
 
-		LabelPodName:      p.Name,
-		LabelPodNamespace: p.Namespace,
+		LabelJobSetName:      jobSetName,
+		LabelJobSetNamespace: p.Namespace,
 	}
 
 	for k, v := range p.Spec.NodeSelector {
@@ -247,9 +281,22 @@ func (g *GKE) nodePoolForPod(name string, p *corev1.Pod) (*containerv1beta1.Node
 		}
 	}
 
-	var secondaryDisks []containerv1beta1.SecondaryBootDisk
+	var taints []*containerv1beta1.NodeTaint
+
+	spot := p.Spec.NodeSelector["cloud.google.com/gke-spot"] == "true"
+	if spot {
+		// Add the taint that NAP would add.
+		// https://cloud.google.com/kubernetes-engine/docs/concepts/spot-vms#spotvms-nap
+		taints = append(taints, &containerv1beta1.NodeTaint{
+			Key:    "cloud.google.com/gke-spot",
+			Value:  "true",
+			Effect: "NO_SCHEDULE",
+		})
+	}
+
+	var secondaryDisks []*containerv1beta1.SecondaryBootDisk
 	if g.ClusterContext.NodeSecondaryDisk != "" {
-		secondaryDisks = []containerv1beta1.SecondaryBootDisk{
+		secondaryDisks = []*containerv1beta1.SecondaryBootDisk{
 			{
 				// Example: "projects/my-gcp-project/global/images/my-disk-image"
 				DiskImage: g.ClusterContext.NodeSecondaryDisk,
@@ -273,6 +320,8 @@ func (g *GKE) nodePoolForPod(name string, p *corev1.Pod) (*containerv1beta1.Node
 			MachineType:         machineType,
 			ReservationAffinity: reservation,
 			Labels:              labels,
+			Spot:                spot,
+			Taints:              taints,
 		},
 		InitialNodeCount: int64(nodeCount),
 		Locations:        []string{g.ClusterContext.NodeZone},
@@ -310,15 +359,28 @@ func sumTPURequests(p *corev1.Pod) (int, error) {
 	return n, nil
 }
 
-func podToNodePoolName(p *corev1.Pod, prefix, suffix string) string {
-	var uid string
-	ref := metav1.GetControllerOf(p)
-	if ref != nil {
-		uid = string(ref.UID)
-	} else {
-		uid = string(p.UID)
+// podToNodePoolName deterministically generates a node pool name for a given pod,
+// by using the JobSet name and job-key (SHA1 hash of namespaced job key), as
+// given in the pod labels.
+// These labels are stable through JobSet restarts, so the node pool name
+// generated here will be the same if the JobSet is restarted.
+// Node pool name format is: {first 34 chars of jobset name}-{first 5 chars of job-key}
+// This ensures node pool names are within the 40 char limit on node pool name size.
+func podToNodePoolName(p *corev1.Pod) (string, error) {
+	jobSetName, exists := p.Labels[jobset.JobSetNameKey]
+	if !exists {
+		return "", fmt.Errorf("%s label not found on pod %s", jobset.JobSetNameKey, p.Name)
 	}
-	return prefix + uid[0:12] + suffix
+	jobKey, exists := p.Labels[jobset.JobKey]
+	if !exists {
+		return "", fmt.Errorf("%s label not found on pod %s", jobset.JobKey, p.Name)
+	}
+
+	prefixLength := min(maxJobSetPrefixLength, len(jobSetName))
+	prefix := jobSetName[:prefixLength]
+	suffix := jobKey[:jobKeySuffixLength]
+	nodePoolName := fmt.Sprintf("%s-%s", prefix, suffix)
+	return nodePoolName, nil
 }
 
 func tpuTopologyToNodeCount(accelerator, topo string) (int, error) {
@@ -383,4 +445,11 @@ func waitForGkeOp(svc *containerv1beta1.Service, c GKEContext, operation *contai
 	}
 
 	return fmt.Errorf("timeout while waiting for operation %s on %s to complete", operation.Name, operation.TargetLink)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

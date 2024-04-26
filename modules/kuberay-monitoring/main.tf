@@ -14,7 +14,7 @@
 
 # Temporary workaround to ensure the GMP webhook is installed before applying PodMonitorings.
 resource "time_sleep" "wait_for_gmp_operator" {
-  create_duration = "10s"
+  create_duration = "60s"
 }
 
 # google managed prometheus engine
@@ -23,7 +23,7 @@ resource "helm_release" "gmp-engine" {
   chart            = "${path.module}/charts/gmp-engine/"
   namespace        = var.namespace
   create_namespace = var.create_namespace
-  # timeout increased to support autopilot scaling resources, and give enough time to complete the deployment 
+  # Timeout is increased to guarantee sufficient scale-up time for Autopilot nodes.
   timeout = 1200
   set {
     name  = "projectID"

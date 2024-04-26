@@ -25,16 +25,16 @@ project_id = "<project-id>"
 # subnetwork_cidr   = "10.100.0.0/16"
 # subnetwork_region = "us-central1"
 
-create_network    = false
+create_network    = true
 network_name      = "default"
 subnetwork_name   = "default"
-subnetwork_region = "us-central1"
+subnetwork_region = "us-east4"
 
 ## gke variables
 private_cluster     = false ## Default true. Use false for a public cluster
 autopilot_cluster   = false # false = standard cluster, true = autopilot cluster
 cluster_name        = "test-cluster"
-cluster_location    = "us-central1"
+cluster_location    = "us-east4"
 gcs_fuse_csi_driver = true
 
 cpu_pools = [{
@@ -50,32 +50,18 @@ cpu_pools = [{
 ## make sure required gpu quotas are available in the corresponding region
 enable_gpu = true
 gpu_pools = [{
-  name               = "gpu-pool-t4"
-  machine_type       = "n1-standard-16"
-  node_locations     = "us-central1-b,us-central1-c"
-  autoscaling        = true
-  min_count          = 1
+  name           = "gpu-pool-l4"
+  machine_type   = "g2-standard-24"
+  node_locations = "us-east4-c"
+  autoscaling    = true
+
+  min_count          = 2
   max_count          = 3
-  disk_size_gb       = 100
+  accelerator_count  = 2
+  disk_size_gb       = 200
   enable_gcfs        = true
   logging_variant    = "DEFAULT"
   disk_type          = "pd-balanced"
-  accelerator_count  = 2
-  accelerator_type   = "nvidia-tesla-t4"
+  accelerator_type   = "nvidia-l4"
   gpu_driver_version = "LATEST"
-  },
-  {
-    name               = "gpu-pool-l4"
-    machine_type       = "g2-standard-24"
-    node_locations     = "us-central1-a"
-    autoscaling        = true
-    min_count          = 2
-    max_count          = 3
-    accelerator_count  = 2
-    disk_size_gb       = 100
-    enable_gcfs        = true
-    logging_variant    = "DEFAULT"
-    disk_type          = "pd-balanced"
-    accelerator_type   = "nvidia-l4"
-    gpu_driver_version = "LATEST"
 }]

@@ -22,7 +22,7 @@ locals {
   security_context                  = { for k, v in var.security_context : k => v if v != null }
   cloudsql_instance_connection_name = format("%s:%s:%s", var.project_id, var.db_region, var.cloudsql_instance_name)
   additional_labels = tomap({
-    for item in var.additional_labels :
+    for item in split(",", var.additional_labels) :
     split("=", item)[0] => split("=", item)[1]
   })
 }
@@ -231,6 +231,7 @@ module "iap_auth" {
   client_id                = var.client_id
   client_secret            = var.client_secret
   domain                   = var.domain
+  members_allowlist        = var.members_allowlist
   depends_on = [
     helm_release.ray-cluster,
     data.kubernetes_service.head-svc,

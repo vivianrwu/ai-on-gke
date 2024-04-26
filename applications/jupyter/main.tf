@@ -51,7 +51,7 @@ module "project-services" {
     "servicenetworking.googleapis.com",
     "serviceusage.googleapis.com",
     "sourcerepo.googleapis.com",
-    (var.add_auth ? ["iap.googleapis.com"] : [])
+    "iap.googleapis.com"
   ])
 }
 
@@ -60,7 +60,7 @@ module "infra" {
   count  = var.create_cluster ? 1 : 0
 
   project_id        = var.project_id
-  cluster_name      = var.cluster_name
+  cluster_name      = local.cluster_name
   cluster_location  = var.cluster_location
   autopilot_cluster = var.autopilot_cluster
   private_cluster   = var.private_cluster
@@ -69,27 +69,27 @@ module "infra" {
   subnetwork_name   = "default"
   cpu_pools         = var.cpu_pools
   enable_gpu        = false
+  depends_on        = [module.project-services]
 }
 
 data "google_container_cluster" "default" {
-  count    = var.create_cluster ? 0 : 1
-  name     = var.cluster_name
-  location = var.cluster_location
+  count      = var.create_cluster ? 0 : 1
+  name       = var.cluster_name
+  location   = var.cluster_location
+  depends_on = [module.project-services]
 }
 
 locals {
-  endpoint              = var.create_cluster ? "https://${module.infra[0].endpoint}" : "https://${data.google_container_cluster.default[0].endpoint}"
-  ca_certificate        = var.create_cluster ? base64decode(module.infra[0].ca_certificate) : base64decode(data.google_container_cluster.default[0].master_auth[0].cluster_ca_certificate)
-  private_cluster       = var.create_cluster ? var.private_cluster : data.google_container_cluster.default[0].private_cluster_config.0.enable_private_endpoint
-  cluster_membership_id = var.cluster_membership_id == "" ? var.cluster_name : var.cluster_membership_id
-  enable_autopilot      = var.create_cluster ? var.autopilot_cluster : data.google_container_cluster.default[0].enable_autopilot
-  host                  = local.private_cluster ? "https://connectgateway.googleapis.com/v1/projects/${data.google_project.project.number}/locations/${var.cluster_location}/gkeMemberships/${local.cluster_membership_id}" : local.endpoint
-  kubernetes_namespace  = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.kubernetes_namespace}" : var.kubernetes_namespace
-}
-
-locals {
+  endpoint                          = var.create_cluster ? "https://${module.infra[0].endpoint}" : "https://${data.google_container_cluster.default[0].endpoint}"
+  ca_certificate                    = var.create_cluster ? base64decode(module.infra[0].ca_certificate) : base64decode(data.google_container_cluster.default[0].master_auth[0].cluster_ca_certificate)
+  private_cluster                   = var.create_cluster ? var.private_cluster : data.google_container_cluster.default[0].private_cluster_config.0.enable_private_endpoint
+  cluster_membership_id             = var.cluster_membership_id == "" ? local.cluster_name : var.cluster_membership_id
+  enable_autopilot                  = var.create_cluster ? var.autopilot_cluster : data.google_container_cluster.default[0].enable_autopilot
+  host                              = local.private_cluster ? "https://connectgateway.googleapis.com/v1/projects/${data.google_project.project.number}/locations/${var.cluster_location}/gkeMemberships/${local.cluster_membership_id}" : local.endpoint
+  kubernetes_namespace              = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.kubernetes_namespace}" : var.kubernetes_namespace
+  cluster_name                      = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.cluster_name}" : var.cluster_name
   workload_identity_service_account = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.workload_identity_service_account}" : var.workload_identity_service_account
-  jupyterhub_default_uri            = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${var.cluster_name}/${local.kubernetes_namespace}/proxy-public/overview?project=${var.project_id}"
+  jupyterhub_default_uri            = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${local.cluster_name}/${local.kubernetes_namespace}/proxy-public/overview?project=${var.project_id}"
 }
 
 provider "kubernetes" {
@@ -147,6 +147,8 @@ module "jupyterhub" {
   workload_identity_service_account = local.workload_identity_service_account
   gcs_bucket                        = var.gcs_bucket
   autopilot_cluster                 = local.enable_autopilot
+  notebook_image                    = "jupyter/tensorflow-notebook"
+  notebook_image_tag                = "python-3.10"
 
   # IAP Auth parameters
   add_auth                 = var.add_auth

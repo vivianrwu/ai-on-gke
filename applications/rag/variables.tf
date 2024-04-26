@@ -31,6 +31,11 @@ variable "cluster_location" {
   type = string
 }
 
+variable "kubernetes_version" {
+  type    = string
+  default = "1.28"
+}
+
 variable "kubernetes_namespace" {
   type        = string
   description = "Kubernetes namespace where resources are deployed"
@@ -38,16 +43,16 @@ variable "kubernetes_namespace" {
 }
 
 variable "additional_labels" {
-  // list(string) is used instead of map(string) since blueprint metadata does not support maps.
-  type        = list(string)
+  // string is used instead of map(string) since blueprint metadata does not support maps.
+  type        = string
   description = "Additional labels to add to Kubernetes resources."
-  default     = ["created-by=ai-on-gke", "ai.gke.io=rag"]
+  default     = "created-by=ai-on-gke,ai.gke.io=rag"
 }
 
 variable "jupyter_service_account" {
   type        = string
   description = "Google Cloud IAM service account for authenticating with GCP services"
-  default     = "jupyter-sa"
+  default     = "jupyter-rag-sa"
 }
 
 variable "enable_grafana_on_ray_dashboard" {
@@ -65,7 +70,7 @@ variable "create_ray_service_account" {
 variable "ray_service_account" {
   type        = string
   description = "Google Cloud IAM service account for authenticating with GCP services"
-  default     = "ray-sa"
+  default     = "ray-rag-sa"
 }
 
 variable "create_rag_service_account" {
@@ -147,7 +152,7 @@ variable "frontend_k8s_backend_service_port" {
 
 variable "frontend_domain" {
   type        = string
-  description = "Domain used for SSL certificate. If it's empty, *.nip.io DNS is used."
+  description = "Domain used for SSL certificate."
   default     = ""
 }
 
@@ -206,7 +211,7 @@ variable "ray_dashboard_k8s_backend_service_port" {
 
 variable "ray_dashboard_domain" {
   type        = string
-  description = "Domain used for SSL certificate. If it's empty, *.nip.io DNS is used."
+  description = "Domain used for SSL certificate."
   default     = ""
 }
 
@@ -273,7 +278,7 @@ variable "jupyter_k8s_backend_service_port" {
 
 variable "jupyter_domain" {
   type        = string
-  description = "Domain used for SSL certificate. If it's empty, *.nip.io DNS is used."
+  description = "Domain used for SSL certificate."
   default     = ""
 }
 
@@ -314,7 +319,7 @@ variable "private_cluster" {
 
 variable "autopilot_cluster" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "cloudsql_instance" {
@@ -373,7 +378,7 @@ variable "gpu_pools" {
     max_count              = optional(number, 3)
     local_ssd_count        = optional(number, 0)
     spot                   = optional(bool, false)
-    disk_size_gb           = optional(number, 100)
+    disk_size_gb           = optional(number, 200)
     disk_type              = optional(string, "pd-standard")
     image_type             = optional(string, "COS_CONTAINERD")
     enable_gcfs            = optional(bool, false)
@@ -394,7 +399,7 @@ variable "gpu_pools" {
     autoscaling        = true
     min_count          = 1
     max_count          = 3
-    disk_size_gb       = 100
+    disk_size_gb       = 200
     disk_type          = "pd-balanced"
     enable_gcfs        = true
     accelerator_count  = 2

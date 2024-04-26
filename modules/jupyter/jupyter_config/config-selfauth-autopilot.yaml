@@ -76,8 +76,8 @@ singleuser:
     limit: 16G
     guarantee: 16G
   cpu:
-    limit: 4
-    guarantee: 4
+    limit: 8
+    guarantee: 8
   extraResource:
     limits:
       ephemeral-storage: ${ephemeral_storage}
@@ -88,6 +88,7 @@ singleuser:
   extraEnv:
     # Used for GCSFuse to set the ephemeral storage as the home directory. If not set, it will show a permission error on the pod log when using GCSFuse.
     JUPYTER_ALLOW_INSECURE_WRITES: "true"
+    CLOUDSQL_INSTANCE_CONNECTION_NAME: ${cloudsql_instance_connection_name}
   extraLabels:
     ${indent(4, chomp(jsonencode(additional_labels)))}
   image:
@@ -105,15 +106,23 @@ singleuser:
     dynamic:
       pvcNameTemplate: claim-{username}
     extraVolumes:
-      - name: test-vol
+      - name: data-vol
         csi:
           driver: gcsfuse.csi.storage.gke.io
           volumeAttributes:
             bucketName: ${gcs_bucket}
             mountOptions: "implicit-dirs,uid=1000,gid=100"
+      - name: secret-volume
+        secret:
+          secretName: ${secret_name}
+          optional: true
+
     extraVolumeMounts:
-        - name: test-vol
-          mountPath: /persist-data
+        - name: data-vol
+          mountPath: /data
+        - name: secret-volume
+          mountPath: /etc/secret-volume
+          readOnly: true
   profileList:
     - display_name: "CPU (C3)"
       description: "Creates CPU (C3) VMs as the compute for notebook execution."
@@ -125,56 +134,12 @@ singleuser:
               display_name: "Local (SSD)"
               kubespawner_override:
                 default: true
-            GCSFuse:
-              display_name: "GCSFuse"
-              kubespawner_override:
-                volume_mounts:
-                - name: gcs-fuse-csi-ephemeral
-                  mountPath: /home/jovyan
-                volumes:
-                - name: gcs-fuse-csi-ephemeral
-                  csi:
-                    driver: gcsfuse.csi.storage.gke.io
-                    volumeAttributes:
-                      bucketName: gcsfuse-{username}
-                      mountOptions: "uid=1000,gid=100,o=noexec,implicit-dirs,dir-mode=777,file-mode=777"
       kubespawner_override:
         node_selector:
           cloud.google.com/compute-class: "Performance"
           cloud.google.com/machine-family: "c3"
           cloud.google.com/gke-ephemeral-storage-local-ssd: "true"
       default: true
-    - display_name: "GPU (T4)"
-      description: "Creates GPU VMs (T4) as the compute for notebook execution."
-      profile_options:
-        storage:
-          display_name: "Storage"
-          choices:
-            DefaultStorage:
-              display_name: "Local (Standard)"
-              kubespawner_override:
-                default: true
-            GCSFuse:
-              display_name: "GCSFuse"
-              kubespawner_override:
-                volume_mounts:
-                - name: gcs-fuse-csi-ephemeral
-                  mountPath: /home/jovyan
-                volumes:
-                - name: gcs-fuse-csi-ephemeral
-                  csi:
-                    driver: gcsfuse.csi.storage.gke.io
-                    volumeAttributes:
-                      bucketName: gcsfuse-{username}
-                      mountOptions: "uid=1000,gid=100,o=noexec,implicit-dirs,dir-mode=777,file-mode=777"
-      kubespawner_override:
-        image: ${notebook_image}:${notebook_image_tag}
-        extra_resource_limits:
-          nvidia.com/gpu: "2"
-        extra_resource_guarantees:
-          nvidia.com/gpu: "2"
-        node_selector:
-          cloud.google.com/gke-accelerator: "nvidia-tesla-t4"
     - display_name: "GPU (L4)"
       description: "Creates GPU VMs (L4) as the compute for notebook execution."
       profile_options:
@@ -185,19 +150,6 @@ singleuser:
               display_name: "Local (SSD)"
               kubespawner_override:
                 default: true
-            GCSFuse:
-              display_name: "GCSFuse"
-              kubespawner_override:
-                volume_mounts:
-                - name: gcs-fuse-csi-ephemeral
-                  mountPath: /home/jovyan
-                volumes:
-                - name: gcs-fuse-csi-ephemeral
-                  csi:
-                    driver: gcsfuse.csi.storage.gke.io
-                    volumeAttributes:
-                      bucketName: gcsfuse-{username}
-                      mountOptions: "uid=1000,gid=100,o=noexec,implicit-dirs,dir-mode=777,file-mode=777"
       kubespawner_override:
         image: ${notebook_image}:${notebook_image_tag}
         extra_resource_limits:
@@ -208,37 +160,6 @@ singleuser:
           cloud.google.com/compute-class: "Accelerator"
           cloud.google.com/gke-accelerator: "nvidia-l4"
           cloud.google.com/gke-ephemeral-storage-local-ssd: "true"
-    - display_name: "GPU (A100)"
-      description: "Creates GPU VMs (A100) as the compute for notebook execution."
-      profile_options:
-        storage:
-          display_name: "Storage"
-          choices:
-            DefaultStorage:
-              display_name: "Local (Standard)"
-              kubespawner_override:
-                default: true
-            GCSFuse:
-              display_name: "GCSFuse"
-              kubespawner_override:
-                volume_mounts:
-                - name: gcs-fuse-csi-ephemeral
-                  mountPath: /home/jovyan
-                volumes:
-                - name: gcs-fuse-csi-ephemeral
-                  csi:
-                    driver: gcsfuse.csi.storage.gke.io
-                    volumeAttributes:
-                      bucketName: gcsfuse-{username}
-                      mountOptions: "uid=1000,gid=100,o=noexec,implicit-dirs,dir-mode=777,file-mode=777"
-      kubespawner_override:
-        image: ${notebook_image}:${notebook_image_tag}
-        extra_resource_limits:
-          nvidia.com/gpu: "2"
-        extra_resource_guarantees:
-          nvidia.com/gpu: "2"
-        node_selector:
-          cloud.google.com/gke-accelerator: "nvidia-tesla-a100"
   cmd: null
   cloudMetadata:
     blockWithIptables: false

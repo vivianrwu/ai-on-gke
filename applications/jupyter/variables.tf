@@ -32,10 +32,10 @@ variable "kubernetes_namespace" {
 }
 
 variable "additional_labels" {
-  // list(string) is used instead of map(string) since blueprint metadata does not support maps.
-  type        = list(string)
+  // string is used instead of map(string) since blueprint metadata does not support maps.
+  type        = string
   description = "Additional labels to add to Kubernetes resources."
-  default     = ["created-by=ai-on-gke", "ai.gke.io=jupyter"]
+  default     = "created-by=ai-on-gke,ai.gke.io=jupyter"
 }
 
 variable "gcs_bucket" {
@@ -108,7 +108,7 @@ variable "create_brand" {
 
 variable "domain" {
   type        = string
-  description = "Provide domain for ingress resource and ssl certificate. If it's empty, it will use nip.io wildcard dns"
+  description = "Provide domain for ingress resource and ssl certificate."
   default     = ""
 }
 
@@ -150,7 +150,7 @@ variable "private_cluster" {
 
 variable "autopilot_cluster" {
   type    = bool
-  default = false
+  default = true
 }
 
 variable "cpu_pools" {
