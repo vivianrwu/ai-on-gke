@@ -56,7 +56,7 @@ module "project-services" {
     "serviceusage.googleapis.com",
     "sourcerepo.googleapis.com",
     "sqladmin.googleapis.com",
-    (var.frontend_add_auth || var.jupyter_add_auth ? ["iap.googleapis.com"] : [])
+    "iap.googleapis.com"
   ])
 }
 
@@ -64,26 +64,29 @@ module "infra" {
   source = "../../infrastructure"
   count  = var.create_cluster ? 1 : 0
 
-  project_id        = var.project_id
-  cluster_name      = var.cluster_name
-  cluster_location  = var.cluster_location
-  region            = local.cluster_location_region
-  autopilot_cluster = var.autopilot_cluster
-  private_cluster   = var.private_cluster
-  create_network    = var.create_network
-  network_name      = local.network_name
-  subnetwork_name   = local.network_name
-  subnetwork_cidr   = var.subnetwork_cidr
-  subnetwork_region = local.cluster_location_region
-  cpu_pools         = var.cpu_pools
-  enable_gpu        = true
-  gpu_pools         = var.gpu_pools
+  project_id         = var.project_id
+  cluster_name       = local.cluster_name
+  cluster_location   = var.cluster_location
+  region             = local.cluster_location_region
+  autopilot_cluster  = var.autopilot_cluster
+  private_cluster    = var.private_cluster
+  create_network     = var.create_network
+  network_name       = local.network_name
+  subnetwork_name    = local.network_name
+  subnetwork_cidr    = var.subnetwork_cidr
+  subnetwork_region  = local.cluster_location_region
+  cpu_pools          = var.cpu_pools
+  enable_gpu         = true
+  gpu_pools          = var.gpu_pools
+  kubernetes_version = var.kubernetes_version
+  depends_on         = [module.project-services]
 }
 
 data "google_container_cluster" "default" {
-  count    = var.create_cluster ? 0 : 1
-  name     = var.cluster_name
-  location = var.cluster_location
+  count      = var.create_cluster ? 0 : 1
+  name       = var.cluster_name
+  location   = var.cluster_location
+  depends_on = [module.project-services]
 }
 
 locals {
@@ -97,13 +100,14 @@ locals {
 
 ## Generated names for marketplace deployment
 locals {
+  cluster_name            = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.cluster_name}" : var.cluster_name
   kubernetes_namespace    = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.kubernetes_namespace}" : var.kubernetes_namespace
   network_name            = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.network_name}" : var.network_name
   ray_service_account     = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.ray_service_account}" : var.ray_service_account
   jupyter_service_account = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.jupyter_service_account}" : var.jupyter_service_account
   rag_service_account     = var.goog_cm_deployment_name != "" ? "${var.goog_cm_deployment_name}-${var.rag_service_account}" : var.rag_service_account
-  frontend_default_uri    = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${var.cluster_name}/${local.kubernetes_namespace}/rag-frontend/overview?project=${var.project_id}"
-  jupyterhub_default_uri  = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${var.cluster_name}/${local.kubernetes_namespace}/proxy-public/overview?project=${var.project_id}"
+  frontend_default_uri    = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${local.cluster_name}/${local.kubernetes_namespace}/rag-frontend/overview?project=${var.project_id}"
+  jupyterhub_default_uri  = "https://console.cloud.google.com/kubernetes/service/${var.cluster_location}/${local.cluster_name}/${local.kubernetes_namespace}/proxy-public/overview?project=${var.project_id}"
   ## if cloudsql_instance_region not specified, then default to cluster_location region
   cluster_location_region  = (length(split("-", var.cluster_location)) == 2 ? var.cluster_location : join("-", slice(split("-", var.cluster_location), 0, 2)))
   cloudsql_instance_region = var.cloudsql_instance_region != "" ? var.cloudsql_instance_region : local.cluster_location_region
@@ -179,15 +183,23 @@ module "cloudsql" {
 }
 
 module "jupyterhub" {
-  source     = "../../modules/jupyter"
-  providers  = { helm = helm.rag, kubernetes = kubernetes.rag }
-  namespace  = local.kubernetes_namespace
-  project_id = var.project_id
-  gcs_bucket = var.gcs_bucket
-  add_auth   = var.jupyter_add_auth
+  source            = "../../modules/jupyter"
+  providers         = { helm = helm.rag, kubernetes = kubernetes.rag }
+  namespace         = local.kubernetes_namespace
+  project_id        = var.project_id
+  gcs_bucket        = var.gcs_bucket
+  add_auth          = var.jupyter_add_auth
+  additional_labels = var.additional_labels
 
   autopilot_cluster                 = local.enable_autopilot
   workload_identity_service_account = local.jupyter_service_account
+
+  notebook_image     = "us-central1-docker.pkg.dev/ai-on-gke/rag-on-gke/jupyter-notebook-image"
+  notebook_image_tag = "v1.1-rag"
+
+  db_secret_name         = module.cloudsql.db_secret_name
+  cloudsql_instance_name = local.cloudsql_instance
+  db_region              = local.cloudsql_instance_region
 
   # IAP Auth parameters
   create_brand             = var.create_brand
@@ -229,6 +241,7 @@ module "kuberay-cluster" {
   disable_network_policy = var.disable_ray_cluster_network_policy
   depends_on             = [module.kuberay-operator]
   use_custom_image       = true
+  additional_labels      = var.additional_labels
 
   # IAP Auth parameters
   add_auth                 = var.ray_dashboard_add_auth
@@ -242,13 +255,14 @@ module "kuberay-cluster" {
   k8s_backend_config_name  = var.ray_dashboard_k8s_backend_config_name
   k8s_backend_service_port = var.ray_dashboard_k8s_backend_service_port
   domain                   = var.ray_dashboard_domain
-  members_allowlist        = var.ray_dashboard_members_allowlist
+  members_allowlist        = var.ray_dashboard_members_allowlist != "" ? split(",", var.ray_dashboard_members_allowlist) : []
 }
 
 module "kuberay-monitoring" {
   source                          = "../../modules/kuberay-monitoring"
   providers                       = { helm = helm.rag, kubernetes = kubernetes.rag }
   project_id                      = var.project_id
+  autopilot_cluster               = local.enable_autopilot
   namespace                       = local.kubernetes_namespace
   create_namespace                = true
   enable_grafana_on_ray_dashboard = var.enable_grafana_on_ray_dashboard
@@ -296,4 +310,3 @@ module "frontend" {
   members_allowlist        = var.frontend_members_allowlist != "" ? split(",", var.frontend_members_allowlist) : []
   depends_on               = [module.namespace]
 }
-

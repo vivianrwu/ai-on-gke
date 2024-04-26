@@ -48,27 +48,19 @@ function onReady() {
         enableForm(false);
 
         // Collect filter data
-        var filterEnabled = document.getElementById("toggle-filters").checked;
-        var body = JSON.stringify({
+        let data = {
             prompt: prompt,
-        })
-        if (filterEnabled) {
-            let data = {
-                prompt: prompt,
-            }
-
-            if (document.getElementById('toggle-nlp-filter-section').checked) {
-                data.nlpFilterLevel = document.getElementById("nlp-range").value
-            }
-
-            if (document.getElementById('toggle-dlp-filter-section').checked) {
-                data.inspectTemplate = document.getElementById('inspect-template-dropdown').value;
-                data.deidentifyTemplate = document.getElementById('deidentify-template-dropdown').value;
-            }
-
-            body = JSON.stringify(data)
         }
 
+        if (document.getElementById('toggle-nlp-filter-section').checked) {
+            data.nlpFilterLevel = document.getElementById("nlp-range").value
+        }
+
+        if (document.getElementById('toggle-dlp-filter-section').checked) {
+            data.inspectTemplate = document.getElementById('inspect-template-dropdown').value;
+            data.deidentifyTemplate = document.getElementById('deidentify-template-dropdown').value;
+        }
+        var body = JSON.stringify(data)
 
 
         // Send data to the server
@@ -84,27 +76,40 @@ function onReady() {
             }
             return response.json();
         }).then(data => {
-            responseEl.textContent = data.response.text;
+            var content = data.response.text
+            if (data.response.warnings && data.response.warnings.length > 0) {
+                responseEl.classList.replace("response", "warning");
+                content += "\n\nWarning: " + data.response.warnings.join("\n") + "\n"
+            }
+            responseEl.textContent = content;
         }).catch(err => {
             responseEl.classList.replace("response", "error");
             responseEl.textContent = err.message;
         }).finally(() => enableForm(true));
     });
 
-    document.getElementById("toggle-filters").addEventListener("change", function() {
-        if (this.checked) {
-            document.getElementById('toggle-dlp-filter-section-div').style.display = 'block'
-            document.getElementById('toggle-nlp-filter-section-div').style.display = 'block'
-        } else {
-            document.getElementById('toggle-dlp-filter-section-div').style.display = 'none'
-            document.getElementById('toggle-nlp-filter-section-div').style.display = 'none'
-        }
-        fetchDLPEnabled()
-        fetchNLPEnabled()
-    });
-
     document.getElementById("toggle-dlp-filter-section").addEventListener("change", function() {
         fetchDLPEnabled()
+        var inspectDropdown = document.getElementById('inspect-template-dropdown');
+        var deidentifyDropdown = document.getElementById('deidentify-template-dropdown');
+
+        // Check the Inspect Template Dropdown
+        if (inspectDropdown.options.length <= 0) {
+            inspectDropdown.style.display = 'none'; // Hide Dropdown
+            document.getElementById('inspect-template-msg').style.display = 'block'; // Show Message
+        } else {
+            inspectDropdown.style.display = 'block'; // Show Dropdown
+            document.getElementById('inspect-template-msg').style.display = 'none'; // Hide Message
+        }
+
+        // Check the De-identify Template Dropdown
+        if (deidentifyDropdown.options.length <= 0) {
+            deidentifyDropdown.style.display = 'none'; // Hide Dropdown
+            document.getElementById('deidentify-template-msg').style.display = 'block'; // Show Message
+        } else {
+            deidentifyDropdown.style.display = 'block'; // Show Dropdown
+            document.getElementById('deidentify-template-msg').style.display = 'none'; // Hide Message
+        }
     });
 
     document.getElementById("toggle-nlp-filter-section").addEventListener("change", function() {
@@ -136,10 +141,9 @@ function autoResizeTextarea() {
 // Function to handle the visibility of filter section
 function toggleNlpFilterSection(nlpEnabled) {
     var filterOptions = document.getElementById("nlp-filter-section");
-    var checkbox = document.getElementById('toggle-filters');
     var nlpCheckbox = document.getElementById('toggle-nlp-filter-section');
 
-    if (nlpEnabled && checkbox.checked && nlpCheckbox.checked) {
+    if (nlpEnabled && nlpCheckbox.checked) {
         filterOptions.style.display = "block";
     } else {
         filterOptions.style.display = "none";
@@ -158,13 +162,13 @@ function updateNLPValue() {
         // Determine the color based on the value
         let color;
         if (value <= 25) {
-            color = '#EA4335'; // Red
-        } else if (value <= 50) {
-            color = '#FBBC05'; // Yellow
-        } else if (value <= 75) {
-            color = '#34A853'; // Green
-        } else {
             color = '#4285F4'; // Blue
+        } else if (value <= 50) {
+            color = '#34A853'; // Green
+        } else if (value <= 75) {
+            color = '#FBBC05'; // Yellow
+        } else {
+            color = '#EA4335'; // Red
         }
 
         // Apply the color to the slider through a gradient
@@ -197,9 +201,8 @@ function fetchNLPEnabled() {
 // Function to handle the visibility of filter section
 function toggleDLPFilterSection(dlpEnabled) {
     var filterOptions = document.getElementById("dlp-filter-section");
-    var checkbox = document.getElementById('toggle-filters');
     var dlpCheckbox = document.getElementById('toggle-dlp-filter-section');
-    if (dlpEnabled && checkbox.checked && dlpCheckbox.checked) {
+    if (dlpEnabled && dlpCheckbox.checked) {
         filterOptions.style.display = "block";
     } else {
         filterOptions.style.display = "none";

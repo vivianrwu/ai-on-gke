@@ -21,7 +21,6 @@ import random
 import threading
 import time
 from locust import web  # Import the web module from Locust
-from flask import send_from_directory
 from typing import Callable, List
 from locust import FastHttpUser, task, events
 from locust.runners import MasterRunner
@@ -29,7 +28,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 
 from custom_metric_aggregator import TokenMetricCollector
-metric_collector = TokenMetricCollector()
+local_metric_collector = TokenMetricCollector()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -59,7 +58,7 @@ def generate_request(prompt):
             "temperature": 0.0 if use_beam_search else 1.0,
             "top_p": 1.0,
             "max_tokens": output_len,
-            "ignore_eos": True,
+            "ignore_eos": False,
             "stream": False,
         }
     elif backend == "tgi":
@@ -96,6 +95,11 @@ def generate_request(prompt):
             "max_tokens": output_len,
             "stream": False,
         }
+    elif backend == "jetstream":
+        pload = {
+            "prompt": prompt,
+            "max_tokens": output_len,
+        }
     else:
         raise ValueError(f"Unknown backend: {backend}")
     return pload
@@ -110,15 +114,22 @@ def get_token_count(prompt, resp):
     number_of_output_tokens = 0
 
     if backend == "vllm":
-        number_of_output_tokens = 0  # to be added
+        resp_dict = json.loads(resp.content.decode('utf-8'))
+        total_tokens = len(
+            tokenizer.encode(resp_dict["text"][0]))
+        number_of_output_tokens = total_tokens - number_of_input_tokens
     elif backend == "tgi":
-        number_of_output_tokens = 0  # to be added
+        resp_dict = json.loads(resp.content.decode('utf-8'))
+        number_of_output_tokens = len(
+            tokenizer.encode(resp_dict['generated_text']))
     elif backend == "tensorrt_llm_triton":
         resp_dict = json.loads(resp.content.decode('utf-8'))
         number_of_output_tokens = len(
             tokenizer.encode(resp_dict['text_output']))
     elif backend == "sax":
         number_of_output_tokens = 0  # to be added
+    elif backend == "jetstream":
+        number_of_output_tokens = 0
     else:
         raise ValueError(f"Unknown backend: {backend}")
     return number_of_input_tokens, number_of_output_tokens
@@ -126,10 +137,11 @@ def get_token_count(prompt, resp):
 
 class BenchmarkUser(FastHttpUser):
     weight = 1
-    # Connection_timeout default is 60s. For inferencing workloads with a large payload
-    # this timeout can be too short. Increasing timeout to large amount.
+    # Connection_timeout and network_timeout default is 60s. For inferencing workloads with
+    # a large payload this timeout can be too short. Increasing timeouts to large amount.
     # TODO: turn timeout into a variable.
     connection_timeout = 10800
+    network_timeout = 10800
 
     @task
     def lm_generate(self):
@@ -160,78 +172,68 @@ class BenchmarkUser(FastHttpUser):
 
     def handle_successful_response(self, prompt, reponse, start_time):
         global model_params
-        if model_params['enable_custom_metrics'] == 'true':
-            test_time = time.time() - start_time
-            request_successful_bool = 1
-            tokens_sent, tokens_received = get_token_count(prompt, reponse)
+        test_time = time.time() - start_time
+        request_successful_bool = 1
+        tokens_sent, tokens_received = get_token_count(prompt, reponse)
 
-            logging.info(
-                f'sending to master: metric_update: {[tokens_sent, tokens_received, test_time, request_successful_bool]}')
-            self.environment.runner.send_message("metric_update", [
-                                                 tokens_sent, tokens_received, test_time, request_successful_bool])
+        local_metric_collector.add_metric(
+            tokens_sent, tokens_received, test_time, request_successful_bool)
+        logging.info(
+            f'sending to master: metric_update: {[tokens_sent, tokens_received, test_time, request_successful_bool]}')
 
     def handle_failed_response(self, request, response):
         global model_params
         response.failure("Got unexpected response")
         logging.error(f"request {request} failed with: {response.status_code}")
-        if model_params['enable_custom_metrics'] == 'true':
-            tokens_sent = -1
-            tokens_received = -1
-            test_time = -1
-            request_successful_bool = 0
+        tokens_sent = -1
+        tokens_received = -1
+        test_time = -1
+        request_successful_bool = 0
 
-            logging.info(
-                f'sending to master: metric_update: {[tokens_sent, tokens_received, test_time, request_successful_bool]}')
-            self.environment.runner.send_message("metric_update", [
-                                                 tokens_sent, tokens_received, test_time, request_successful_bool])
-
-
-"""
-methods for the locust master to write custom metrics
-"""
-
-
-def collect_metrics(msg, **_kwargs):
-    """locust master collects the metrics emitted by the locust workers and updates the metric_collector object"""
-    sent = msg.data[0]
-    received = msg.data[1]
-    test_time = msg.data[2]
-    request_successful_bool = msg.data[3]
-    logging.info(f'recevied from worker {msg.data}')
-    metric_collector.add_metric(
-        sent, received, test_time, request_successful_bool)
-
-
-def periodically_write_metrics(environment):
-    metric_collector.write_to_csv()
-    threading.Timer(environment.parsed_options.csv_upload_frequency,
-                    periodically_write_metrics, args=(environment,)).start()
-
-
-def setup_periodic_metrics_writer(environment,  **_kwargs):
-    """locust master periodically writes the collected metrics to csv"""
-    periodically_write_metrics(environment)
-
-
-def setup_custom_route(environment, **_kwargs):
-    """Sets up custom routes in the locust master for serving CSV files."""
-    directory = os.path.dirname('/')  # Directory where the file is located
-
-    @environment.web_ui.app.route("/custom_metrics/<filename>")
-    def custom_metrics(filename):
-        if filename not in ['custom_metrics.csv', 'custom_metrics_final.csv']:
-            return "File not found.", 404  # Basic validation to prevent unauthorized file access
-        return send_from_directory(directory, filename, as_attachment=True)
+        local_metric_collector.add_metric(
+            tokens_sent, tokens_received, test_time, request_successful_bool)
+        logging.info(
+            f'sending to master: metric_update: {[tokens_sent, tokens_received, test_time, request_successful_bool]}')
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    """on test stop the locust master writes the output to custom_metrics_final and resets the metric_collector for next tests"""
-    if isinstance(environment.runner, MasterRunner) and environment.parsed_options.enable_custom_metrics == 'true':
+    """on test stop the locust master resets metric collector"""
+    if isinstance(environment.runner, MasterRunner):
         logging.info(f'init metric_collector')
-        metric_collector.write_to_csv('custom_metrics_final.csv')
-        metric_collector.__init__()
-        metric_collector.write_to_csv()
+        local_metric_collector.__init__()
+
+
+"""
+Methods for collecting custom metrics to share to master webui
+"""
+
+@events.report_to_master.add_listener
+def on_report_to_master(client_id, data):
+    """
+    This event is triggered on the worker instances every time a stats report is
+    to be sent to the locust master. It will allow us to add our local workers metrics
+    to the dict that is being sent, and then we clear the local stats in the worker, so
+    as to avoid sending duplicate data to the master on the next run.
+    """
+    tokens_sent, tokens_recieved, test_time, success_count, failure_count = local_metric_collector.share_stats()
+    data["tokens-sent"] = tokens_sent
+    data["tokens-received"] = tokens_recieved
+    data["test-time"] = test_time
+    data["success-count"] = success_count
+    data["failure-count"] = failure_count
+    local_metric_collector.__init__
+
+
+@events.worker_report.add_listener
+def on_worker_report(client_id, data):
+    """
+    This event is triggered on the master instance when a new stats report arrives
+    from a worker. Here we just add the local stats to the master's aggregated
+    stats dict.
+    """
+    local_metric_collector.add_metrics(
+        data["tokens-sent"], data["tokens-received"], data["test-time"], data["success-count"], data["failure-count"])
 
 
 @events.init_command_line_parser.add_listener
@@ -248,18 +250,13 @@ def _(parser):
                         include_in_web_ui=True, help="Whether to use beam search instead of sampling.")
     parser.add_argument("--tokenizer", type=str, env_var="TOKENIZER",
                         include_in_web_ui=False, default="", help="Tokenizer to use for token calculations")
-    parser.add_argument("--enable_custom_metrics", type=str, env_var="ENABLE_CUSTOM_METRICS",
-                        include_in_web_ui=True, default="false", help="enable custom metric")
-    parser.add_argument("--csv_upload_frequency", type=int, env_var="CSV_UPLOAD_FREQUENCY",
-                        include_in_web_ui=True, default=10, help="upload custom metrics every X seconds")
-
 
 @events.init.add_listener
 def _(environment, **kwargs):
     if not isinstance(environment.runner, MasterRunner):
         global model_params
         global test_data
-        global metric_collector
+        global local_metric_collector
         global tokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(
@@ -281,14 +278,25 @@ def _(environment, **kwargs):
             "sax_model": environment.parsed_options.sax_model,
             "use_beam_search": environment.parsed_options.use_beam_search,
             "tokenizer": environment.parsed_options.tokenizer,
-            "enable_custom_metrics": environment.parsed_options.enable_custom_metrics,
-            "csv_upload_frequency": environment.parsed_options.csv_upload_frequency,
         }
         logging.info(
             f"Using the following benchmark parameters:\n {model_params}")
 
-    elif environment.parsed_options.enable_custom_metrics == 'true':
-        # code to setup the locust master to write custom metrics
-        setup_periodic_metrics_writer(environment)
-        setup_custom_route(environment)
-        environment.runner.register_message("metric_update", collect_metrics)
+
+@events.init.add_listener
+def locust_init(environment, **kwargs):
+    """
+    We need somewhere to store the stats 
+
+    On the master node the metric_collector will contain the aggregated sum of all content-lengths,
+    while on the worker nodes this will be the sum of the content-lengths since the
+    last stats report was sent to the master
+    """
+    if environment.web_ui:
+        # this code is only run on the master node (the web_ui instance doesn't exist on workers)
+        @environment.web_ui.app.route("/stats/custom_metrics")
+        def total_content_length():
+            """
+            Add a route to the Locust web app, where we can see the total content-length
+            """
+            return local_metric_collector.json_dump_report()

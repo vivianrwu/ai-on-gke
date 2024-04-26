@@ -24,10 +24,10 @@ variable "namespace" {
 }
 
 variable "additional_labels" {
-  // list(string) is used instead of map(string) since blueprint metadata does not support maps.
-  type        = list(string)
+  // string is used instead of map(string) since blueprint metadata does not support maps.
+  type        = string
   description = "Additional labels to add to Kubernetes resources."
-  default     = []
+  default     = ""
 }
 
 variable "region" {
@@ -129,7 +129,7 @@ variable "support_email" {
 
 variable "domain" {
   type        = string
-  description = "Provide domain for ingress resource and ssl certificate. If it's empty, it will use nip.io wildcard dns"
+  description = "Provide domain for ingress resource and ssl certificate."
   default     = ""
 }
 

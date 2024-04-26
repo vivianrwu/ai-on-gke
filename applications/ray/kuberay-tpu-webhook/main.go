@@ -24,6 +24,7 @@ import (
 type slice struct {
 	clusterName  string
 	groupName    string
+	namespace    string
 	replicaIndex int
 	numOfHosts   int32
 }
@@ -45,7 +46,6 @@ var (
 
 	// headless svc will be of the form: {kuberay-cluster-name}-headless-worker-svc
 	headlessServiceSuffix = "headless-worker-svc"
-	headlessServiceName   string
 
 	// map of pod slices to workers in the slice
 	sliceToWorkers map[slice][]worker
@@ -77,7 +77,30 @@ func containerRequestingTPUs(containers ...corev1.Container) bool {
 	return false
 }
 
-func getNumTPUHostsFromTopology(clusterName string, namespace string, topology string, acceleratorType string) (int32, error) {
+// returns `google.com/TPU` Resource request value for the container
+// this indicates the number of TPU chips for the container to use
+func getNumTPUChipsRequested(containers ...corev1.Container) int64 {
+	tpuLimit := int64(0)
+	tpuRequest := int64(0)
+	for _, container := range containers {
+		if l := container.Resources.Limits; l != nil {
+			if resource := l[tpuResourceName]; !resource.IsZero() {
+				tpuLimit = resource.Value()
+			}
+		}
+		if r := container.Resources.Requests; r != nil {
+			if resource := r[tpuResourceName]; !resource.IsZero() {
+				tpuRequest = resource.Value()
+			}
+		} else {
+			// default to limit if request is ommitted
+			tpuRequest = tpuLimit
+		}
+	}
+	return min(tpuLimit, tpuRequest)
+}
+
+func getNumTPUHostsFromTopology(clusterName string, groupName string, namespace string, topology string, chipsPerHost int64) (int32, error) {
 	if topology == "" {
 		return 0, errors.New("TPU topology not specified")
 	}
@@ -86,37 +109,15 @@ func getNumTPUHostsFromTopology(clusterName string, namespace string, topology s
 	for i := 0; i < len(topologyVals); i++ {
 		dim, err := strconv.Atoi(topologyVals[i])
 		if err != nil {
-			klog.ErrorS(err, "RayCluster", namespace+"/"+clusterName, "gke-tpu-topology", topology)
+			klog.ErrorS(err, "getNumTPUHostsFromTopology", "RayCluster", namespace+"/"+clusterName, "Worker Group", groupName, "gke-tpu-topology", topology)
 			return 0, err
 		}
 		chips *= dim
 	}
 	// calculate the # of VMs using # of chips per host
-	acceleratorTypeValues := strings.Split(acceleratorType, "-")
-	chipsPerHost := 4 // default to 4 chips per VM
-	if acceleratorTypeValues[0] == "v5litepod" {
-		// v5e TPU VMs can have 1, 4 or 8 chips
-		chipsPerHost, err := strconv.Atoi(acceleratorTypeValues[1])
-		if err != nil {
-			klog.ErrorS(err, "RayCluster", namespace+"/"+clusterName, "gke-tpu-accelerator", acceleratorType)
-			return 0, err
-		}
-		chipsPerHost = min(chipsPerHost, 8) // max of 8 chips per host
-	}
-	hosts := int32(max(chips/chipsPerHost, 1))
-	klog.V(1).InfoS("getNumTPUHostsFromTopology", "RayCluster", namespace+"/"+clusterName, "hosts", hosts)
+	hosts := max(int32(chips)/int32(chipsPerHost), 1)
+	klog.V(1).InfoS("getNumTPUHostsFromTopology", "RayCluster", namespace+"/"+clusterName, "Worker Group", groupName, "topology", topology, "chips", chips, "hosts", hosts)
 	return hosts, nil
-}
-
-// check if request is for TPU multi-host
-func isTPUMultiHost(clusterName string, namespace string, topology string, acceleratorType string) (bool, error) {
-	vms, err := getNumTPUHostsFromTopology(clusterName, namespace, topology, acceleratorType)
-	if err != nil {
-		return false, err
-	}
-	isMultiHost := vms > 1
-	klog.V(0).InfoS("isTPUMultiHost", "RayCluster", namespace+"/"+clusterName, "topology", topology, "TPU VMs", vms)
-	return isMultiHost, nil
 }
 
 // unmarshal raycluster from admission request
@@ -133,7 +134,7 @@ func extractRayCluster(admissionReview *admissionv1.AdmissionReview) (*ray.RayCl
 	return &rayCluster, nil
 }
 
-func genDNSHostnames(workerGroupSpec ray.WorkerGroupSpec, replicaIndex int) (string, error) {
+func genDNSHostnames(workerGroupSpec ray.WorkerGroupSpec, clusterName string, namespace string, replicaIndex int) (string, error) {
 	numHosts := workerGroupSpec.NumOfHosts
 	if numHosts == 0 {
 		return "", errors.New("workerGroupSpec NumOfHosts not set")
@@ -142,13 +143,14 @@ func genDNSHostnames(workerGroupSpec ray.WorkerGroupSpec, replicaIndex int) (str
 	hostNames := make([]string, numHosts)
 	// Host names will be of the form {WORKER_GROUP_NAME}-{REPLICA_INDEX}-{HOST_INDEX}.headless-worker-svc
 	for j := 0; j < int(numHosts); j++ {
-		hostNames[j] = fmt.Sprintf("%s-%d-%d.%s", workerGroupName, replicaIndex, j, headlessServiceName)
+		hostNames[j] = fmt.Sprintf("%s-%d-%d.%s-%s", workerGroupName, replicaIndex, j, clusterName, headlessServiceSuffix)
 	}
+	klog.V(1).InfoS("genDNSHostnames", "RayCluster", namespace+"/"+clusterName, "NumOfHosts", numHosts, "Replica Index", replicaIndex)
 	return strings.Join(hostNames, ","), nil
 }
 
 // inject subdomain and TPU_WORKER_HOSTNAMES into pods for TPU multi-host initialization
-func injectHostnames(hostNames string, envPath string, container corev1.Container, patches *[]patch) {
+func injectHostnames(clusterName string, hostNames string, envPath string, container corev1.Container, patches *[]patch) {
 	subdomainPatch, hostNamesPatch := patch{"op": "add"}, patch{"op": "add"}
 	subdomainPath := "/spec/subdomain"
 	tpuWorkerHostNames := corev1.EnvVar{
@@ -156,7 +158,7 @@ func injectHostnames(hostNames string, envPath string, container corev1.Containe
 		Value: hostNames,
 	}
 	subdomainPatch["path"] = subdomainPath
-	subdomainPatch["value"] = headlessServiceName
+	subdomainPatch["value"] = fmt.Sprintf("%s-%s", clusterName, headlessServiceSuffix)
 	// create new EnvVar array if container.Env is empty, and append hostnames if not
 	if len(container.Env) == 0 {
 		hostNamesPatch["path"] = envPath
@@ -218,21 +220,26 @@ func checkWorkersMatchTopology(clusterName string, namespace string, workerGroup
 	if numHosts == 0 {
 		return false, errors.New("workerGroupSpec NumOfHosts not set")
 	}
+	groupName := workerGroupSpec.GroupName
 	containers := workerGroupSpec.Template.Spec.Containers
 	if containers == nil {
 		return false, errors.New("Container path not specified")
 	}
 	if containerRequestingTPUs(containers...) {
 		topology := workerGroupSpec.Template.Spec.NodeSelector["cloud.google.com/gke-tpu-topology"]
-		acceleratorType := workerGroupSpec.Template.Spec.NodeSelector["cloud.google.com/gke-tpu-accelerator"]
-		klog.V(1).InfoS("checkWorkersMatchTopology", "RayCluster", namespace+"/"+clusterName, "topology", topology, "AcceleratorType", acceleratorType, "NumOfHosts", numHosts)
+		klog.V(1).InfoS("checkWorkersMatchTopology", "RayCluster", namespace+"/"+clusterName, "topology", topology, "NumOfHosts", numHosts)
 		if topology == "" {
-			klog.ErrorS(errors.New("TPU topology not specified"), "RayCluster", namespace+"/"+clusterName, "gke-tpu-topology", topology)
+			err := errors.New("TPU topology not specified")
+			klog.ErrorS(err, "checkWorkersMatchTopology", "RayCluster", namespace+"/"+clusterName, "gke-tpu-topology", topology)
+			return false, err
 		}
-		if acceleratorType == "" {
-			klog.ErrorS(errors.New("TPU accelerator not specified"), "RayCluster", namespace+"/"+clusterName, "gke-tpu-accelerator", acceleratorType)
+		chipsPerHost := getNumTPUChipsRequested(containers...)
+		if chipsPerHost == 0 {
+			err := errors.New("Container does not set TPU limits")
+			klog.ErrorS(err, "checkWorkersMatchTopology", "RayCluster", namespace+"/"+clusterName, "gke-tpu-topology", topology)
+			return false, err
 		}
-		expectedHosts, err := getNumTPUHostsFromTopology(clusterName, namespace, topology, acceleratorType)
+		expectedHosts, err := getNumTPUHostsFromTopology(clusterName, groupName, namespace, topology, chipsPerHost)
 		if err != nil {
 			return false, err
 		}
@@ -255,31 +262,33 @@ func validateRayCluster(admissionReview *admissionv1.AdmissionReview) (*admissio
 	message := ""
 	clusterName := raycluster.Name
 	namespace := raycluster.Namespace
-	klog.V(0).InfoS("validateRayCluster", "RayCluster", namespace+"/"+clusterName)
-	headlessServiceName = fmt.Sprintf("%s-%s", clusterName, headlessServiceSuffix)
+	klog.V(1).InfoS("validateRayCluster", "RayCluster", namespace+"/"+clusterName)
 	workerGroupSpecs := raycluster.Spec.WorkerGroupSpecs
-	if workerGroupSpecs == nil {
-		return nil, errors.New("WorkerGroupSpecs not specified")
-	}
 	for i := 0; i < len(workerGroupSpecs); i++ {
 		workerGroupSpec := workerGroupSpecs[i]
-		// create mapping for pod slices -> TPU_WORKER_HOSTNAMES in cluster
-		replicas := int(*workerGroupSpec.Replicas)
-		numOfHosts := workerGroupSpec.NumOfHosts
-		for replicaIndex := 0; replicaIndex < replicas; replicaIndex++ {
-			// reset past sliceToWorkers and sliceToHostnames entries for slice in ray cluster
-			groupName := workerGroupSpec.GroupName
-			podSlice := slice{clusterName, groupName, replicaIndex, numOfHosts}
-			sliceToWorkers[podSlice] = nil
-			sliceToHostnames[podSlice] = ""
-			// generate TPU_WORKER_HOSTNAMES
-			if numOfHosts > 1 {
-				joinedHostNames, err := genDNSHostnames(workerGroupSpec, replicaIndex)
-				if err != nil {
-					klog.Error("Failed to generate DNS Hostnames")
+		if containerRequestingTPUs(workerGroupSpec.Template.Spec.Containers...) {
+			klog.V(1).InfoS("validateRayCluster", "RayCluster", namespace+"/"+clusterName, "Worker Group", workerGroupSpec.GroupName, "Requests TPUs", true)
+			// create mapping for pod slices -> TPU_WORKER_HOSTNAMES in cluster
+			replicas := int(*workerGroupSpec.Replicas)
+			numOfHosts := workerGroupSpec.NumOfHosts
+			for replicaIndex := 0; replicaIndex < replicas; replicaIndex++ {
+				// reset past sliceToWorkers and sliceToHostnames entries for slice in ray cluster
+				groupName := workerGroupSpec.GroupName
+				podSlice := slice{clusterName, groupName, namespace, replicaIndex, numOfHosts}
+				sliceToWorkers[podSlice] = nil
+				sliceToHostnames[podSlice] = ""
+				// generate TPU_WORKER_HOSTNAMES
+				if numOfHosts > 1 {
+					joinedHostNames, err := genDNSHostnames(workerGroupSpec, clusterName, namespace, replicaIndex)
+					if err != nil {
+						klog.Error("Failed to generate DNS Hostnames")
+					}
+					sliceToHostnames[podSlice] = joinedHostNames
 				}
-				sliceToHostnames[podSlice] = joinedHostNames
 			}
+		} else {
+			// RayCluster worker group does not request TPUs
+			klog.V(1).InfoS("validateRayCluster", "RayCluster", namespace+"/"+clusterName, "Worker Group", workerGroupSpec.GroupName, "Requests TPUs", false)
 		}
 		// validate NumOfHosts for worker group matches topology nodeSelector
 		workersMatchTopology, err := checkWorkersMatchTopology(clusterName, namespace, workerGroupSpec)
@@ -291,8 +300,8 @@ func validateRayCluster(admissionReview *admissionv1.AdmissionReview) (*admissio
 			admit = false
 			status = "Failure"
 			message = "Number of workers in worker group not equal to specified topology"
+			break
 		}
-		break
 	}
 
 	// Create AdmissionResponse
@@ -318,15 +327,28 @@ func getEnvironmentVariable(varName string, container corev1.Container) string {
 	return ""
 }
 
-// get next lowest-index pod slice to assign a pod to in the RayCluster
-// this will be the first pod slice with # created pods < NumOfHosts
-func getReplicaIndex(clusterName string, namespace string) int {
+// gets the  next lowest-index pod slice (worker group replica) to assign a pod to in the RayCluster
+// there are three possible cases here:
+//  1. sliceToWorkers is empty, this is the first pod the webhook intercepts
+//     - assign this pod to replica 0
+//  2. The pod slice exists in sliceToWorkers, but has # created workers < NumOfHosts
+//     - assign this pod to the lowest index replica with # created workers < NumOfHosts
+//     - since we update isCreated when a worker is deleted, this allows us to assign re-created
+//     pods to the same replica
+//  3. sliceToWorkers isn't empty, but all slices have # workers == NumOfHosts
+//     - this occurs when the pod we intercept is the first pod of a different slice in the cluster
+//     - we keep track of how many replicas of the same worker group have been added to sliceToWorkers
+//     so far, and assign this pod to the next integer replicaIndex
+func getReplicaIndex(clusterName string, groupName string, namespace string) int {
+	// first pod created in cluster
 	if sliceToWorkers == nil {
 		return 0
 	}
 	nextLowestId := math.MaxInt32
+	numReplicas := 0 // tracks # of replicas in worker group created so far
 	for slice, workerList := range sliceToWorkers {
-		if slice.clusterName == clusterName {
+		if slice.clusterName == clusterName && slice.groupName == groupName && slice.namespace == namespace {
+			numReplicas++
 			createdPods := 0
 			for _, worker := range workerList {
 				if worker.isCreated {
@@ -340,10 +362,11 @@ func getReplicaIndex(clusterName string, namespace string) int {
 			}
 		}
 	}
+	// first pod of new slice in cluster
 	if nextLowestId == math.MaxInt32 {
-		klog.ErrorS(errors.New("Replica Index never set"), "RayCluster", namespace+"/"+clusterName, "Replica Index", nextLowestId)
+		nextLowestId = numReplicas
 	}
-	klog.V(0).InfoS("getReplicaIndex", "RayCluster", namespace+"/"+clusterName, "Replica Index", nextLowestId)
+	klog.V(1).InfoS("getReplicaIndex", "RayCluster", namespace+"/"+clusterName, "Worker Group", groupName, "Replica Index", nextLowestId)
 	return nextLowestId
 }
 
@@ -379,7 +402,7 @@ func getNextWorkerID(podSlice slice, namespace string, replicaIndex int) int {
 		}
 		tpuWorkerID = nextLowestID
 	}
-	klog.V(0).InfoS("getNextWorkerID", "RayCluster", namespace+"/"+podSlice.clusterName, "TPU_WORKER_ID", tpuWorkerID)
+	klog.V(1).InfoS("getNextWorkerID", "RayCluster", namespace+"/"+podSlice.clusterName, "Worker Group", podSlice.groupName, "TPU_WORKER_ID", tpuWorkerID)
 	return tpuWorkerID
 }
 
@@ -417,32 +440,28 @@ func mutatePod(admissionReview *admissionv1.AdmissionReview) (*admissionv1.Admis
 	if clusterName == "" {
 		return nil, errors.New("Kuberay Pod missing RayCluster label")
 	}
-	namespace := pod.Namespace
-	groupName := pod.Labels["ray.io/group"]
-	topology := pod.Spec.NodeSelector["cloud.google.com/gke-tpu-topology"]
-	acceleratorType := pod.Spec.NodeSelector["cloud.google.com/gke-tpu-accelerator"]
-	if topology == "" {
-		klog.ErrorS(errors.New("TPU topology not specified"), "RayCluster", namespace+"/"+clusterName, "gke-tpu-topology", topology)
-	}
-	if acceleratorType == "" {
-		klog.ErrorS(errors.New("TPU accelerator not specified"), "RayCluster", namespace+"/"+clusterName, "gke-tpu-accelerator", acceleratorType)
-	}
 	containers := pod.Spec.Containers
 	if containers == nil {
 		return nil, errors.New("Container path not specified")
 	}
 	if containerRequestingTPUs(containers...) {
+		namespace := pod.Namespace
+		groupName := pod.Labels["ray.io/group"]
+		topology := pod.Spec.NodeSelector["cloud.google.com/gke-tpu-topology"]
+		if topology == "" {
+			klog.ErrorS(errors.New("TPU topology not specified"), "mutatePod", "RayCluster", namespace+"/"+clusterName, "gke-tpu-topology", topology)
+		}
 		// assign worker to the next unique ID in the pod slice and update map
-		numOfHosts, _ := getNumTPUHostsFromTopology(clusterName, namespace, topology, acceleratorType) // ignore error here because topology may not be set yet
-		replicaIndex := getReplicaIndex(clusterName, namespace)
-		podSlice := slice{clusterName, groupName, replicaIndex, numOfHosts}
+		chipsPerHost := getNumTPUChipsRequested(containers...)
+		numOfHosts, _ := getNumTPUHostsFromTopology(clusterName, groupName, namespace, topology, chipsPerHost) // ignore error here because topology may not be set yet
+		replicaIndex := getReplicaIndex(clusterName, groupName, namespace)
+		podSlice := slice{clusterName, groupName, namespace, replicaIndex, numOfHosts}
 		tpuWorkerID := getNextWorkerID(podSlice, namespace, replicaIndex) // defaults to 0 for single-host
 
 		// inject replica index label
 		injectReplicaLabel(clusterName, namespace, replicaIndex, groupName, &patches)
 
-		isMultiHost, _ := isTPUMultiHost(clusterName, namespace, topology, acceleratorType) // ignore error here because topology may not be set yet
-		if isMultiHost {
+		if numOfHosts > 1 {
 			// inject hostname into pod spec for DNS records
 			hostname := fmt.Sprintf(groupName+"-%d-%d", replicaIndex, tpuWorkerID)
 			klog.V(1).InfoS("mutatePod", "RayCluster", namespace+"/"+clusterName, "hostname", hostname)
@@ -460,11 +479,11 @@ func mutatePod(admissionReview *admissionv1.AdmissionReview) (*admissionv1.Admis
 			container := containers[i]
 			if containerRequestingTPUs(container) {
 				path := fmt.Sprintf("/spec/containers/%d/env", i)
-				if isMultiHost {
+				if numOfHosts > 1 {
 					// inject TPU_WORKER_HOSTNAMES set during RayCluster interception
 					klog.V(1).InfoS("mutatePod", "RayCluster", namespace+"/"+clusterName, "TPU_WORKER_HOSTNAMES", sliceToHostnames[podSlice])
-					klog.V(1).InfoS("mutatePod", "RayCluster", namespace+"/"+clusterName, "subdomain", headlessServiceName)
-					injectHostnames(sliceToHostnames[podSlice], path, container, &patches)
+					klog.V(1).InfoS("mutatePod", "RayCluster", namespace+"/"+clusterName, "subdomain", clusterName+"-"+headlessServiceSuffix)
+					injectHostnames(clusterName, sliceToHostnames[podSlice], path, container, &patches)
 				}
 				// inject TPU_WORKER_ID
 				if getEnvironmentVariable("TPU_WORKER_ID", container) == "" {
@@ -544,8 +563,8 @@ func deletePod(admissionReview *admissionv1.AdmissionReview) (*admissionv1.Admis
 
 	if replicaIndexLabel != "" {
 		replicaIndexLabelValues := strings.Split(replicaIndexLabel, "-")
-		replicaIndex, _ := strconv.Atoi(replicaIndexLabelValues[1]) // ignore error here since must be set
-		
+		replicaIndex, _ := strconv.Atoi(replicaIndexLabelValues[len(replicaIndexLabelValues)-1]) // ignore error here since must be set
+
 		containers := pod.Spec.Containers
 		if containers == nil {
 			return nil, errors.New("Pod spec missing containers")
@@ -565,12 +584,12 @@ func deletePod(admissionReview *admissionv1.AdmissionReview) (*admissionv1.Admis
 		}
 		// update sliceToWorkers map
 		for slice, _ := range sliceToWorkers {
-			if slice.clusterName == clusterName && slice.groupName == groupName && slice.replicaIndex == replicaIndex {
+			if slice.clusterName == clusterName && slice.groupName == groupName && slice.namespace == namespace && slice.replicaIndex == replicaIndex {
 				// set the pod state to indicate it is not running
 				for index, worker := range sliceToWorkers[slice] {
 					if worker.workerIndex == tpuWorkerID {
 						sliceToWorkers[slice][index].isCreated = false
-						klog.V(0).InfoS("deletePod", "RayCluster", namespace+"/"+clusterName, "TPU_WORKER_ID", tpuWorkerID, "Replica Index", replicaIndex)
+						klog.V(1).InfoS("deletePod", "RayCluster", namespace+"/"+clusterName, "TPU_WORKER_ID", tpuWorkerID, "Replica Index", replicaIndex)
 						break
 					}
 				}
@@ -629,7 +648,7 @@ func main() {
 		}
 
 		if admissionReview.Request.Kind.Kind == "Pod" {
-			klog.V(0).Info("Received review for Pod creation")
+			klog.V(1).Info("Received review for Pod creation")
 			response, err := mutatePod(admissionReview)
 			if err != nil {
 				klog.Errorf("Failed to mutate pod: %s", err)

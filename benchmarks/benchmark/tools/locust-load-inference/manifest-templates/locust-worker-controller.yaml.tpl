@@ -14,6 +14,7 @@ spec:
     metadata:
       labels:
         app: locust-worker
+        examples.ai.gke.io/source: ai-on-gke-benchmarks
     spec:
       serviceAccountName: ${ksa}
       containers:
@@ -44,12 +45,10 @@ spec:
               value: ${tokenizer}
             - name: USE_BEAM_SEARCH
               value: ${use_beam_search}
-            - name: ENABLE_CUSTOM_METRICS
-              value: ${enable_custom_metrics}
-            - name: CSV_UPLOAD_FREQUENCY
-              value: ${csv_upload_frequency}
+%{ for hugging_face_token_secret in hugging_face_token_secret_list ~}
             - name: HUGGINGFACE_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: ${huggingface_secret}  # Replace ${huggingface_secret} with your secret's name
-                  key: token
+                  name: hf-token
+                  key: HF_TOKEN
+%{ endfor ~}
