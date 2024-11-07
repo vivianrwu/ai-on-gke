@@ -4,7 +4,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTORCH_JETSTREAM_VERSION=jetstream-v0.2.3
+ENV PYTORCH_JETSTREAM_VERSION=jax-cc
 
 RUN apt -y update && apt install -y --no-install-recommends \
     ca-certificates \
@@ -17,10 +17,19 @@ RUN python3 -m pip install --upgrade pip
 RUN update-alternatives --install \
     /usr/bin/python3 python3 /usr/bin/python3.10 1
 
-RUN git clone https://github.com/google/jetstream-pytorch.git && \
+
+RUN git clone https://github.com/AI-Hypercomputer/JetStream
+RUN git clone https://github.com/vivianrwu/jetstream-pytorch.git && \
 cd /jetstream-pytorch && \
 git checkout ${PYTORCH_JETSTREAM_VERSION} && \
 bash install_everything.sh
+
+RUN pip install -U jax[tpu]==0.4.35 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
+RUN cd /JetStream && \
+pip install -e .
+
+RUN pip install huggingface_hub[cli]
 
 COPY jetstream_pytorch_server_entrypoint.sh /usr/bin/
 
