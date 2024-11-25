@@ -94,6 +94,8 @@ convert_maxtext_checkpoint() {
     VERSION=$5
     HUGGINGFACE=$6
     META_URL=$7
+    QUANTIZE_TYPE=$8
+    QUANTIZE_WEIGHTS=$9
 
     echo -e "\nbucket name=${BUCKET_NAME}"
     echo -e "\nmodel path=${MODEL_PATH}"
@@ -153,6 +155,7 @@ convert_maxtext_checkpoint() {
 
         echo "Setting model size for $MODEL_PATH"
         if [[ $MODEL_NAME == "llama-2" ]]; then
+            TOKENIZER="assets/tokenizer.llama2"
             if [[ $MODEL_PATH == *"7B"* ]] || [[ $MODEL_PATH == *"7b"* ]]; then
                 MODEL_SIZE="llama2-7b"
             elif [[ $MODEL_PATH == *"13B"* ]] || [[ $MODEL_PATH == *"13b"* ]]; then
@@ -166,6 +169,7 @@ convert_maxtext_checkpoint() {
             fi
 
         elif [[ $MODEL_NAME == "llama-3" ]]; then
+            TOKENIZER="assets/tokenizer_llama3.tiktoken"
             if [[ $MODEL_PATH == *"8B"* ]] || [[ $MODEL_PATH == *"8b"* ]]; then
                 MODEL_SIZE="llama3-8b"
             elif [[ $MODEL_PATH == *"70B"* ]] || [[ $MODEL_PATH == *"70b"* ]]; then
@@ -201,6 +205,26 @@ convert_maxtext_checkpoint() {
 
         touch commit_success.txt
         gcloud storage cp commit_success.txt ${OUTPUT_CKPT_DIR_UNSCANNED}/0/items
+
+        LOAD_PARAMS_PATH="${OUTPUT_CKPT_DIR_UNSCANNED}/0/items"
+        SAVE_QUANT_PARAMS_PATH="${OUTPUT_CKPT_DIR_UNSCANNED}/quantized"
+
+        echo -e "\n quantize weights: ${QUANTIZE_WEIGHTS}"
+        VALID_QUANTIZATIONS=("int8" "int8w" "int4w" "intmp" "fp8")
+        if [ $QUANTIZE_WEIGHTS == "True" ]; then 
+            # quantize_type is required, the default is bf16
+            VALID="False"
+            for quantization in $"${VALID_QUANTIZATIONS[@]}"; do
+                if [ $QUANTIZE_TYPE == "$quantization" ]; then
+                    VALID="True"
+                    pip install jax[tpu]
+                    python3 MaxText/decode.py MaxText/configs/base.yml tokenizer_path=${TOKENIZER} load_parameters_path=${LOAD_PARAMS_PATH} max_prefill_predict_length=1024 max_target_length=2048 model_name=${MODEL_SIZE} ici_fsdp_parallelism=1 ici_autoregressive_parallelism=1 ici_tensor_parallelism=-1 scan_layers=false weight_dtype=bfloat16 per_device_batch_size=1 attention=dot_product quantization=${QUANTIZE_TYPE} save_quantized_params_path=${SAVE_QUANT_PARAMS_PATH}
+                fi
+            done
+            if [ $VALID == "False" ]; then
+                echo -e "Quantize weights was True but an invalid quantization was provided: $QUANTIZE_TYPE. Valid quantizations: $VALID_QUANTIZATIONS"
+            fi
+        fi
 
     else
         echo -e "\nUnclear model"
@@ -315,7 +339,7 @@ case ${INFERENCE_SERVER} in
     jetstream-maxtext)
         check_gsbucket "$BUCKET_NAME"
         check_model_path "$MODEL_PATH"
-        convert_maxtext_checkpoint "$BUCKET_NAME" "$MODEL_PATH" "$MODEL_NAME" "$OUTPUT_DIRECTORY" "$VERSION" "$HUGGINGFACE" "$META_URL"
+        convert_maxtext_checkpoint "$BUCKET_NAME" "$MODEL_PATH" "$MODEL_NAME" "$OUTPUT_DIRECTORY" "$VERSION" "$HUGGINGFACE" "$META_URL" "$QUANTIZE_TYPE" "$QUANTIZE_WEIGHTS"
         ;;
     jetstream-pytorch)
         check_model_path "$MODEL_PATH"
