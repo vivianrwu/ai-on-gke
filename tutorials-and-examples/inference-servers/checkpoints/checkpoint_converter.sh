@@ -209,7 +209,10 @@ convert_maxtext_checkpoint() {
         LOAD_PARAMS_PATH="${OUTPUT_CKPT_DIR_UNSCANNED}/0/items"
         SAVE_QUANT_PARAMS_PATH="${OUTPUT_CKPT_DIR_UNSCANNED}/quantized"
 
-        echo -e "\n quantize weights: ${QUANTIZE_WEIGHTS}"
+        if [ -z $QUANTIZE_WEIGHTS ]; then
+            QUANTIZE_WEIGHTS="False"
+        fi
+        echo -e "Quantize weights: ${QUANTIZE_WEIGHTS}"
         VALID_QUANTIZATIONS=("int8" "int8w" "int4w" "intmp" "fp8")
         if [ $QUANTIZE_WEIGHTS == "True" ]; then 
             # quantize_type is required, the default is bf16
@@ -217,7 +220,7 @@ convert_maxtext_checkpoint() {
             for quantization in $"${VALID_QUANTIZATIONS[@]}"; do
                 if [ $QUANTIZE_TYPE == "$quantization" ]; then
                     VALID="True"
-                    pip install jax[tpu]
+                    pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
                     python3 MaxText/decode.py MaxText/configs/base.yml tokenizer_path=${TOKENIZER} load_parameters_path=${LOAD_PARAMS_PATH} max_prefill_predict_length=1024 max_target_length=2048 model_name=${MODEL_SIZE} ici_fsdp_parallelism=1 ici_autoregressive_parallelism=1 ici_tensor_parallelism=-1 scan_layers=false weight_dtype=bfloat16 per_device_batch_size=1 attention=dot_product quantization=${QUANTIZE_TYPE} save_quantized_params_path=${SAVE_QUANT_PARAMS_PATH}
                 fi
             done
