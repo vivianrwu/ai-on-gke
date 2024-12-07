@@ -221,6 +221,8 @@ convert_maxtext_checkpoint() {
                 if [ $QUANTIZE_TYPE == "$quantization" ]; then
                     VALID="True"
                     pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+                    # pip install -U "jax[cpu]"
+                    export JAX_PLATFORMS=cpu
                     python3 MaxText/decode.py MaxText/configs/base.yml tokenizer_path=${TOKENIZER} load_parameters_path=${LOAD_PARAMS_PATH} max_prefill_predict_length=1024 max_target_length=2048 model_name=${MODEL_SIZE} ici_fsdp_parallelism=1 ici_autoregressive_parallelism=1 ici_tensor_parallelism=-1 scan_layers=false weight_dtype=bfloat16 per_device_batch_size=1 attention=dot_product quantization=${QUANTIZE_TYPE} save_quantized_params_path=${SAVE_QUANT_PARAMS_PATH}
                 fi
             done
