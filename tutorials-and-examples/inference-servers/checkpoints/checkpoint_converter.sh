@@ -8,12 +8,27 @@ BUCKET_NAME=""
 MODEL_PATH=""
 
 print_usage() {
-    printf "Usage: $0 [ -b BUCKET_NAME ] [ -s INFERENCE_SERVER ] [ -m MODEL_PATH ] [ -n MODEL_NAME ] [ -h HUGGINGFACE ] [ -q QUANTIZE_WEIGHTS ] [ -t QUANTIZE_TYPE ] [ -v VERSION ] [ -i INPUT_DIRECTORY ] [ -o OUTPUT_DIRECTORY ]"
+    echo "Usage: $0 [ -b BUCKET_NAME ] [ -s INFERENCE_SERVER ] [ -m MODEL_PATH ] [ -n MODEL_NAME ] [ -h HUGGINGFACE ] [ -q QUANTIZE_WEIGHTS ] [ -t QUANTIZE_TYPE ] [ -v VERSION ] [ -i INPUT_DIRECTORY ] [ -o OUTPUT_DIRECTORY ]"
+    echo "Options:"
+    echo "  -b, --bucket_name: [string] The GSBucket name to store checkpoints, without gs://."
+    echo "  -s, --inference_server: [string] The name of the inference server that serves your model."
+    echo "  -m, --model_path: [string] The model path."
+    echo "  -n, --model_name: [string] The model name."
+    echo "  -h, --huggingface: [bool] The model is from Hugging Face."
+    echo "  -t, --quantize_type: [string] The type of quantization."
+    echo "  -q, --quantize_weights: [bool] The checkpoint is to be quantized."
+    echo "  -i, --input_directory: [string] The input directory."
+    echo "  -o, --output_directory: [string] The output directory."
+    echo "  -u, --meta_url: [string] The url from Meta."
+    echo "  -v, --version: [string] The version of repository."
 }
 
 print_inference_server_unknown() {
-    printf "Enter a valid inference server [ -s INFERENCE_SERVER ]"
-    printf "Valid options: jetstream-maxtext, jetstream-pytorch"
+    echo "Enter a valid inference server [ -s --inference_server ]"
+    echo "Options:"
+    echo " jetstream-maxtext"
+    echo " jetstream-pytorch"
+    exit 1
 }
 
 check_gsbucket() {
@@ -82,6 +97,7 @@ download_huggingface_checkpoint() {
 }
 
 download_meta_checkpoint() {
+    echo "Downloading checkpoint $MODEL_PATH from Meta..."
     META_URL=$1
     MODEL_PATH=$2
     echo -e "$META_URL" | llama download --source meta --model-id $MODEL_PATH
@@ -115,8 +131,7 @@ convert_maxtext_checkpoint() {
     # checkout stable MaxText commit
     cd maxtext
     git checkout ${VERSION}
-    bash setup.sh
-    # python3 -m pip install -r requirements.txt
+    python3 -m pip install -r requirements.txt
 
     if [[ $VERSION == "jetstream-v0.2.2" || $VERSION == "jetstream-v0.2.1" || $VERSION == "jetstream-v0.2.0" ]]; then
         pip3 install orbax-checkpoint==0.5.20
@@ -153,6 +168,7 @@ convert_maxtext_checkpoint() {
             echo "META_URL: $META_URL"
 
             INPUT_CKPT_DIR_LOCAL=/root/.llama/checkpoints/$MODEL_PATH/
+            INPUT_CKPT_DIR_LOCAL=${INPUT_CKPT_DIR_LOCAL//":"/"-"}
             download_meta_checkpoint "$META_URL" "$MODEL_PATH"
         fi
 
@@ -190,6 +206,14 @@ convert_maxtext_checkpoint() {
             else
                 echo -e "\nUnclear llama3.1 model: $MODEL_PATH"
             fi
+        
+        elif [[ $MODEL_NAME == "llama-3.3" ]]; then
+            TOKENIZER="assets/tokenizer_llama3.tiktoken"
+            if [[ $MODEL_PATH == *"70B"* ]] || [[ $MODEL_PATH == *"70b"* ]]; then
+                MODEL_SIZE="llama3.3-70b"
+            else
+                echo -e "\nUnclear llama3.3 model: $MODEL_PATH"
+            fi
 
         else
             echo -e "\nUnclear llama model"
@@ -197,9 +221,7 @@ convert_maxtext_checkpoint() {
 
         echo "Model size for $MODEL_PATH is $MODEL_SIZE"
 
-        OUTPUT_CKPT_DIR_SCANNED=${OUTPUT_CKPT_DIR}/scanned
-        OUTPUT_CKPT_DIR_UNSCANNED=${OUTPUT_CKPT_DIR}/unscanned
-
+        OUTPUT_CKPT_DIR_UNSCANNED=${OUTPUT_CKPT_DIR}/bf16
         TOKENIZER_PATH=${INPUT_CKPT_DIR_LOCAL}/tokenizer.model
 
         pip3 install torch
@@ -208,6 +230,7 @@ convert_maxtext_checkpoint() {
         echo -e "\nmodel path=${MODEL_PATH}"
         echo -e "\nmodel size=${MODEL_SIZE}"
 
+        export JAX_PLATFORMS=cpu
         cd /maxtext/
         python3 MaxText/llama_ckpt_conversion_inference_only.py \
         --base-model-path ${INPUT_CKPT_DIR_LOCAL} \
@@ -221,20 +244,19 @@ convert_maxtext_checkpoint() {
         gcloud storage cp commit_success.txt ${OUTPUT_CKPT_DIR_UNSCANNED}/0/items
 
         LOAD_PARAMS_PATH="${OUTPUT_CKPT_DIR_UNSCANNED}/0/items"
-        SAVE_QUANT_PARAMS_PATH="${OUTPUT_CKPT_DIR_UNSCANNED}/quantized"
 
         if [ -z $QUANTIZE_WEIGHTS ]; then
             QUANTIZE_WEIGHTS="False"
         fi
         echo -e "Quantize weights: ${QUANTIZE_WEIGHTS}"
         VALID_QUANTIZATIONS=("int8" "int8w" "int4w" "intmp" "fp8")
-        if [ $QUANTIZE_WEIGHTS == "True" ]; then 
+        if [ $QUANTIZE_WEIGHTS == "True" ]; then
             # quantize_type is required, the default is bf16
             VALID="False"
             for quantization in $"${VALID_QUANTIZATIONS[@]}"; do
                 if [ $QUANTIZE_TYPE == "$quantization" ]; then
                     VALID="True"
-                    export JAX_PLATFORMS=cpu
+                    SAVE_QUANT_PARAMS_PATH="${OUTPUT_CKPT_DIR}/${QUANTIZE_TYPE}"
                     python3 MaxText/decode.py \
                     MaxText/configs/base.yml \
                     tokenizer_path=${TOKENIZER} \
@@ -358,22 +380,27 @@ convert_pytorch_checkpoint() {
     echo -e "\nCompleted uploading converted checkpoint from local path ${OUTPUT_CKPT_DIR_LOCAL} to GSBucket ${OUTPUT_CKPT_DIR}"
 }
 
+CMD_ARGS=$(getopt -o "xb:s:m:n:h:t:q:v:i:o:u:" --long "bucket_name:,inference_server:,model_name:,
+model_path:,huggingface:,quantize_type:,quantize_weights:,version:,input_directory:,output_directory:,
+meta_url:,help," -- "$@")
+eval set -- "$CMD_ARGS"
 
-while getopts 'b:s:m:n:h:t:q:v:i:o:u:' flag; do
-    case "${flag}" in
-        b) BUCKET_NAME="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        s) INFERENCE_SERVER="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        m) MODEL_PATH="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        n) MODEL_NAME="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        h) HUGGINGFACE="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        t) QUANTIZE_TYPE="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        q) QUANTIZE_WEIGHTS="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        v) VERSION="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        i) INPUT_DIRECTORY="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        o) OUTPUT_DIRECTORY="$(echo ${OPTARG} | awk -F'=' '{print $2}')" ;;
-        u) META_URL="$(echo ${OPTARG} | awk -F'=' '{print $2"="$3"="$4"="$5"="$6}')" ;;
-        *) print_usage
-    exit 1 ;;
+while true; do
+    case "$1" in
+        -b | --bucket_name) BUCKET_NAME="$2"; shift 2 ;;
+        -s | --inference_server) INFERENCE_SERVER="$2"; shift 2 ;;
+        -m | --model_path) MODEL_PATH="$2"; shift 2 ;;
+        -n | --model_name) MODEL_NAME="$2"; shift 2 ;;
+        -h | --huggingface) HUGGINGFACE="$2"; shift 2 ;;
+        -t | --quantize_type) QUANTIZE_TYPE="$2"; shift 2 ;;
+        -q | --quantize_weights) QUANTIZE_WEIGHTS="$2"; shift 2 ;;
+        -v | --version) VERSION="$2"; shift 2 ;;
+        -i | --input_directory) INPUT_DIRECTORY="$2"; shift 2 ;;
+        -o | --output_directory) OUTPUT_DIRECTORY="$2"; shift 2 ;;
+        -u | --meta_url) META_URL="$2"; shift 2 ;;
+        -x | --help) print_usage; exit 0 ;;
+        --) shift; break ;;
+        *) echo "Internal error!" exit 1 ;;
     esac
 done
 

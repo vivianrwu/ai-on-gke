@@ -25,7 +25,7 @@ RUN apt -y update && apt install -y google-cloud-cli
 RUN pip install kaggle && \
 pip install huggingface_hub[cli] && \
 pip install google-jetstream && \
-pip install llama-toolchain
+pip install llama-stack
 
 COPY checkpoint_converter.sh /usr/bin/
 RUN chmod +x /usr/bin/checkpoint_converter.sh
