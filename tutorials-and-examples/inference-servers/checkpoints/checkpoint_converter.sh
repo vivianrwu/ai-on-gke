@@ -73,7 +73,8 @@ download_huggingface_checkpoint() {
     elif [[ $MODEL_NAME == *"gemma"* ]]; then
         TOKENIZER_PATH=/base/tokenizer.model
         if [[ $MODEL_PATH == *"gemma-2b-it-pytorch"* ]]; then
-            huggingface-cli download google/gemma-2b-pytorch config.json --local-dir ${INPUT_CKPT_DIR_LOCAL}
+            huggingface-cli download google/gemma-2b-pytorch config.json \
+            --local-dir ${INPUT_CKPT_DIR_LOCAL}
         fi
     else
         echo -e "Unclear of tokenizer.model for ${MODEL_NAME}. May have to manually upload."
@@ -106,7 +107,7 @@ convert_maxtext_checkpoint() {
     echo -e "\nurl=${META_URL}"
 
     if [ -z $VERSION ]; then
-        VERSION=jetstream-v0.2.2
+        VERSION=main
     fi
 
     git clone https://github.com/google/maxtext.git
@@ -114,12 +115,11 @@ convert_maxtext_checkpoint() {
     # checkout stable MaxText commit
     cd maxtext
     git checkout ${VERSION}
-    python3 -m pip install -r requirements.txt
+    bash setup.sh
+    # python3 -m pip install -r requirements.txt
 
     if [[ $VERSION == "jetstream-v0.2.2" || $VERSION == "jetstream-v0.2.1" || $VERSION == "jetstream-v0.2.0" ]]; then
         pip3 install orbax-checkpoint==0.5.20
-    else
-        pip3 install orbax-checkpoint==0.6.0
     fi
 
     echo -e "\nCloned MaxText repository and completed installing requirements"
@@ -129,7 +129,10 @@ convert_maxtext_checkpoint() {
         OUTPUT_CKPT_DIR_SCANNED=gs://${BUCKET_NAME}/final/scanned/${MODEL_NAME}_${VARIATION_NAME}
         OUTPUT_CKPT_DIR_UNSCANNED=gs://${BUCKET_NAME}/final/unscanned/${MODEL_NAME}_${VARIATION_NAME}
 
-        python3 MaxText/convert_gemma_chkpt.py --base_model_path gs://${BUCKET_NAME}/base/${MODEL_NAME}_${VARIATION_NAME}/${VARIATION_NAME} --maxtext_model_path=${OUTPUT_CKPT_DIR_SCANNED} --model_size ${MODEL_SIZE}
+        python3 MaxText/convert_gemma_chkpt.py \
+        --base_model_path gs://${BUCKET_NAME}/base/${MODEL_NAME}_${VARIATION_NAME}/${VARIATION_NAME} \
+        --maxtext_model_path=${OUTPUT_CKPT_DIR_SCANNED} \
+        --model_size ${MODEL_SIZE}
         echo -e "\nCompleted conversion of checkpoint to gs://${BUCKET_NAME}/final/scanned/${MODEL_NAME}_${VARIATION_NAME}"
 
         MAXTEXT_MODEL_NAME=${MODEL_NAME}-${MODEL_SIZE}
@@ -162,8 +165,6 @@ convert_maxtext_checkpoint() {
                 MODEL_SIZE="llama2-13b"
             elif [[ $MODEL_PATH == *"70B"* ]] || [[ $MODEL_PATH == *"70b"* ]]; then
                 MODEL_SIZE="llama2-70b"
-            elif [[ $MODEL_PATH == *"405B"* ]] || [[ $MODEL_PATH == *"405b"* ]]; then
-                MODEL_SIZE="llama2-405b"
             else
                 echo -e "\nUnclear llama2 model: $MODEL_PATH"
             fi
@@ -174,10 +175,20 @@ convert_maxtext_checkpoint() {
                 MODEL_SIZE="llama3-8b"
             elif [[ $MODEL_PATH == *"70B"* ]] || [[ $MODEL_PATH == *"70b"* ]]; then
                 MODEL_SIZE="llama3-70b"
-            elif [[ $MODEL_PATH == *"405B"* ]] || [[ $MODEL_PATH == *"405b"* ]]; then
-                MODEL_SIZE="llama3-405b"
             else
                 echo -e "\nUnclear llama3 model: $MODEL_PATH"
+            fi
+
+        elif [[ $MODEL_NAME == "llama-3.1" ]]; then
+            TOKENIZER="assets/tokenizer_llama3.tiktoken"
+            if [[ $MODEL_PATH == *"8B"* ]] || [[ $MODEL_PATH == *"8b"* ]]; then
+                MODEL_SIZE="llama3.1-8b"
+            elif [[ $MODEL_PATH == *"70B"* ]] || [[ $MODEL_PATH == *"70b"* ]]; then
+                MODEL_SIZE="llama3.1-70b"
+            elif [[ $MODEL_PATH == *"405B"* ]] || [[ $MODEL_PATH == *"405b"* ]]; then
+                MODEL_SIZE="llama3.1-405b"
+            else
+                echo -e "\nUnclear llama3.1 model: $MODEL_PATH"
             fi
 
         else
@@ -198,7 +209,10 @@ convert_maxtext_checkpoint() {
         echo -e "\nmodel size=${MODEL_SIZE}"
 
         cd /maxtext/
-        python3 MaxText/llama_ckpt_conversion_inference_only.py --base-model-path ${INPUT_CKPT_DIR_LOCAL} --maxtext-model-path ${OUTPUT_CKPT_DIR_UNSCANNED} --model-size ${MODEL_SIZE}
+        python3 MaxText/llama_ckpt_conversion_inference_only.py \
+        --base-model-path ${INPUT_CKPT_DIR_LOCAL} \
+        --maxtext-model-path ${OUTPUT_CKPT_DIR_UNSCANNED} \
+        --model-size ${MODEL_SIZE}
         echo -e "\nCompleted conversion of checkpoint to ${OUTPUT_CKPT_DIR_UNSCANNED}/0/items"
 
         gcloud storage cp ${TOKENIZER_PATH} ${OUTPUT_CKPT_DIR_UNSCANNED}
@@ -220,10 +234,25 @@ convert_maxtext_checkpoint() {
             for quantization in $"${VALID_QUANTIZATIONS[@]}"; do
                 if [ $QUANTIZE_TYPE == "$quantization" ]; then
                     VALID="True"
-                    pip install -U "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-                    # pip install -U "jax[cpu]"
                     export JAX_PLATFORMS=cpu
-                    python3 MaxText/decode.py MaxText/configs/base.yml tokenizer_path=${TOKENIZER} load_parameters_path=${LOAD_PARAMS_PATH} max_prefill_predict_length=1024 max_target_length=2048 model_name=${MODEL_SIZE} ici_fsdp_parallelism=1 ici_autoregressive_parallelism=1 ici_tensor_parallelism=-1 scan_layers=false weight_dtype=bfloat16 per_device_batch_size=1 attention=dot_product quantization=${QUANTIZE_TYPE} save_quantized_params_path=${SAVE_QUANT_PARAMS_PATH}
+                    python3 MaxText/decode.py \
+                    MaxText/configs/base.yml \
+                    tokenizer_path=${TOKENIZER} \
+                    load_parameters_path=${LOAD_PARAMS_PATH} \
+                    max_prefill_predict_length=1024 \
+                    max_target_length=2048 \
+                    model_name=${MODEL_SIZE} \
+                    ici_fsdp_parallelism=1 \
+                    ici_autoregressive_parallelism=1 \
+                    ici_tensor_parallelism=-1 \
+                    scan_layers=false \
+                    weight_dtype=bfloat16 \
+                    per_device_batch_size=1 \
+                    attention=dot_product \
+                    quantization=${QUANTIZE_TYPE} \
+                    save_quantized_params_path=${SAVE_QUANT_PARAMS_PATH} \
+                    async_checkpointing=false \
+                    quantize_only=true
                 fi
             done
             if [ $VALID == "False" ]; then
@@ -302,11 +331,22 @@ convert_pytorch_checkpoint() {
     if [ $QUANTIZE_WEIGHTS == "True" ]; then 
         # quantize_type is required, it will be set to the default value if not turned on
         if [ -n $QUANTIZE_TYPE ]; then
-            python3 -m convert_checkpoints --model_name=${MODEL_NAME} --input_checkpoint_dir=${INPUT_CKPT_DIR_LOCAL} --output_checkpoint_dir=${OUTPUT_CKPT_DIR_LOCAL} --quantize_type=${QUANTIZE_TYPE} --quantize_weights=${QUANTIZE_WEIGHTS} --from_hf=${HUGGINGFACE}
+            python3 -m convert_checkpoints \
+            --model_name=${MODEL_NAME} \
+            --input_checkpoint_dir=${INPUT_CKPT_DIR_LOCAL} \
+            --output_checkpoint_dir=${OUTPUT_CKPT_DIR_LOCAL} \
+            --quantize_type=${QUANTIZE_TYPE} \
+            --quantize_weights=${QUANTIZE_WEIGHTS} \
+            --from_hf=${HUGGINGFACE}
         fi
     else
         # quantize_weights should be false, but if not the convert_checkpoints script will catch it
-        python3 -m convert_checkpoints --model_name=${MODEL_NAME} --input_checkpoint_dir=${INPUT_CKPT_DIR_LOCAL} --output_checkpoint_dir=${OUTPUT_CKPT_DIR_LOCAL} --quantize_weights=${QUANTIZE_WEIGHTS} --from_hf=${HUGGINGFACE}
+        python3 -m convert_checkpoints \
+        --model_name=${MODEL_NAME} \
+        --input_checkpoint_dir=${INPUT_CKPT_DIR_LOCAL} \
+        --output_checkpoint_dir=${OUTPUT_CKPT_DIR_LOCAL} \
+        --quantize_weights=${QUANTIZE_WEIGHTS} \
+        --from_hf=${HUGGINGFACE}
     fi
     
     echo -e "\nCompleted conversion of checkpoint to ${OUTPUT_CKPT_DIR_LOCAL}"
