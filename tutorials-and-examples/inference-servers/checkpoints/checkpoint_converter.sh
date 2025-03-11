@@ -260,6 +260,7 @@ convert_maxtext_checkpoint() {
         run_name=${RUN_NAME} \
         model_name=${MODEL_SIZE} \
         force_unroll=true \
+        checkpoint_storage_concurrent_gb=500 \
         weight_dtype=bfloat16 \
         opt_type=sgd
 
